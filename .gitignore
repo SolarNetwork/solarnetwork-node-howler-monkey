@@ -1,6 +1,7 @@
 .DS_Store
 /solarnetwork-osgi-target
 test.jpage
+__pycache__/
 build/
 target/
 junit*.properties
