@@ -1,0 +1,6 @@
+.DS_Store
+/solarnetwork-osgi-target
+test.jpage
+build/
+target/
+junit*.properties
