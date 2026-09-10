@@ -37,6 +37,11 @@ import java.util.concurrent.locks.LockSupport;
  * here by a {@link SpiDevice}.
  * </p>
  *
+ * <p>
+ * Instances are not safe for concurrent use; drive one from a single thread (as
+ * {@code meter-tool} does).
+ * </p>
+ *
  * @author matt
  * @version 1.0
  */
@@ -381,6 +386,27 @@ public class Atm90E36 {
 		return ((v >> 8) & 0xFF) | ((v << 8) & 0xFF00);
 	}
 
+	/** Build the 4-byte read frame for each register address. */
+	private static byte[][] readFrames(int[] addresses) {
+		byte[][] frames = new byte[addresses.length][];
+		for ( int i = 0; i < addresses.length; i++ ) {
+			int addr = swap16((addresses[i] | READ_FLAG) & 0xFFFF);
+			frames[i] = new byte[] { (byte) ((addr >> 8) & 0xFF), (byte) (addr & 0xFF), 0x00, 0x00 };
+		}
+		return frames;
+	}
+
+	/** Decode the received frames from a batched read into register values. */
+	private static int[] decodeReadResponses(byte[][] responses) {
+		int[] values = new int[responses.length];
+		for ( int i = 0; i < responses.length; i++ ) {
+			byte[] r = responses[i];
+			int raw = ((r[2] & 0xFF) << 8) | (r[3] & 0xFF);
+			values[i] = swap16(raw) & 0xFFFF;
+		}
+		return values;
+	}
+
 	/**
 	 * Read several registers in a single batched SPI operation (one
 	 * {@code ioctl}), each still framed by its own chip-select cycle as the
@@ -391,19 +417,9 @@ public class Atm90E36 {
 	 * @return the register values, one per address, each {@code 0}-{@code 65535}
 	 */
 	private int[] readRegisters(int... addresses) {
-		byte[][] frames = new byte[addresses.length][];
-		for ( int i = 0; i < addresses.length; i++ ) {
-			int addr = swap16((addresses[i] | READ_FLAG) & 0xFFFF);
-			frames[i] = new byte[] { (byte) ((addr >> 8) & 0xFF), (byte) (addr & 0xFF), 0x00, 0x00 };
+		try ( SpiDevice.Batch batch = spi.batch(readFrames(addresses), BATCH_SETTLE_MICROS) ) {
+			return decodeReadResponses(batch.transfer());
 		}
-		byte[][] responses = spi.transfer(frames, BATCH_SETTLE_MICROS);
-		int[] values = new int[addresses.length];
-		for ( int i = 0; i < responses.length; i++ ) {
-			byte[] r = responses[i];
-			int raw = ((r[2] & 0xFF) << 8) | (r[3] & 0xFF);
-			values[i] = swap16(raw) & 0xFFFF;
-		}
-		return values;
 	}
 
 	private int writeAndGetChecksum(int address, int value, int checksum) {
@@ -460,20 +476,34 @@ public class Atm90E36 {
 			double powerTotal, double powerFactorTotal, double frequency) {
 	}
 
+	/** The registers read for one {@link #readMeasurements()} call, in order. */
+	private static final int[] MEASUREMENT_REGISTERS = { UrmsA, UrmsB, UrmsC, IrmsA, IrmsB, IrmsC,
+			PmeanA, PmeanALSB, PmeanB, PmeanBLSB, PmeanC, PmeanCLSB, PmeanT, PmeanTLSB, PFmeanT, Freq };
+
+	private SpiDevice.Batch measurementBatch;
+
 	/**
 	 * Read every register needed for a CSV row in a single batched SPI operation.
 	 *
 	 * <p>
 	 * This issues one {@code ioctl} covering all 16 register reads instead of one
 	 * per register, which both cuts system-call overhead and removes the
-	 * per-access thread-sleep jitter of the individual accessor methods.
+	 * per-access thread-sleep jitter of the individual accessor methods. The
+	 * batch is created on first use and its native buffers are reused on every
+	 * subsequent call, so a caller polling at a short interval allocates nothing
+	 * here beyond the returned {@link Measurements}; it is released by
+	 * {@link #close()}.
 	 * </p>
 	 *
 	 * @return the measurement snapshot
 	 */
 	public Measurements readMeasurements() {
-		int[] r = readRegisters(UrmsA, UrmsB, UrmsC, IrmsA, IrmsB, IrmsC, PmeanA, PmeanALSB, PmeanB,
-				PmeanBLSB, PmeanC, PmeanCLSB, PmeanT, PmeanTLSB, PFmeanT, Freq);
+		SpiDevice.Batch batch = measurementBatch;
+		if ( batch == null ) {
+			batch = spi.batch(readFrames(MEASUREMENT_REGISTERS), BATCH_SETTLE_MICROS);
+			measurementBatch = batch;
+		}
+		int[] r = decodeReadResponses(batch.transfer());
 		return new Measurements(r[0] / 100.0, r[1] / 100.0, r[2] / 100.0, r[3] / 1000.0, r[4] / 1000.0,
 				r[5] / 1000.0, power(r[6], r[7]), power(r[8], r[9]), power(r[10], r[11]),
 				power(r[12], r[13]), signed16(r[14]) / 1000.0, r[15] / 100.0);
@@ -720,8 +750,13 @@ public class Atm90E36 {
 		return (sys0 & 0x8000) != 0 || (sys1 & 0x8000) != 0;
 	}
 
-	/** Close the underlying SPI device. */
+	/** Release the batched-measurement buffers and close the underlying SPI device. */
 	public void close() {
+		SpiDevice.Batch batch = measurementBatch;
+		if ( batch != null ) {
+			measurementBatch = null;
+			batch.close();
+		}
 		spi.close();
 	}
 

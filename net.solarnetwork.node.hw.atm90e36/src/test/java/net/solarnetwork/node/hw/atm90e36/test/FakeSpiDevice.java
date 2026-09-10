@@ -73,10 +73,16 @@ public class FakeSpiDevice implements SpiDevice {
 	public int maxSpeedHz = -1;
 	public int bitsPerWord = -1;
 
-	/** Number of times the batched {@link #transfer(byte[][], int)} was called. */
-	public int batchCalls = 0;
+	/** Number of {@link #batch(byte[][], int)} handles created. */
+	public int batchOpens = 0;
 
-	/** The {@code settleMicros} argument from the last batched call. */
+	/** Number of {@code Batch.transfer()} calls across all handles. */
+	public int batchTransfers = 0;
+
+	/** Number of {@code Batch.close()} calls. */
+	public int batchCloses = 0;
+
+	/** The {@code settleMicros} argument from the last {@link #batch(byte[][], int)}. */
 	public int lastSettleMicros = -1;
 
 	private static int swap16(int v) {
@@ -118,14 +124,26 @@ public class FakeSpiDevice implements SpiDevice {
 	}
 
 	@Override
-	public byte[][] transfer(byte[][] txFrames, int settleMicros) {
-		batchCalls++;
+	public SpiDevice.Batch batch(byte[][] txFrames, int settleMicros) {
+		batchOpens++;
 		lastSettleMicros = settleMicros;
-		byte[][] rx = new byte[txFrames.length][];
-		for ( int i = 0; i < txFrames.length; i++ ) {
-			rx[i] = transfer(txFrames[i]);
-		}
-		return rx;
+		return new SpiDevice.Batch() {
+
+			@Override
+			public byte[][] transfer() {
+				batchTransfers++;
+				byte[][] rx = new byte[txFrames.length][];
+				for ( int i = 0; i < txFrames.length; i++ ) {
+					rx[i] = FakeSpiDevice.this.transfer(txFrames[i]);
+				}
+				return rx;
+			}
+
+			@Override
+			public void close() {
+				batchCloses++;
+			}
+		};
 	}
 
 	@Override

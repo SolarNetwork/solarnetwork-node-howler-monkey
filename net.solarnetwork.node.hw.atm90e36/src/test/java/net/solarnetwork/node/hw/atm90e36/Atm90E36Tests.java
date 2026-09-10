@@ -24,6 +24,7 @@ package net.solarnetwork.node.hw.atm90e36;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import org.junit.jupiter.api.Test;
 import net.solarnetwork.node.hw.atm90e36.test.FakeSpiDevice;
@@ -101,7 +102,8 @@ class Atm90E36Tests {
 
 		Atm90E36.Measurements m = new Atm90E36(fake).readMeasurements();
 
-		assertEquals(1, fake.batchCalls, "one ioctl for the whole row");
+		assertEquals(1, fake.batchOpens, "one batch handle");
+		assertEquals(1, fake.batchTransfers, "one transfer for the whole row");
 		assertEquals(16, fake.txFrames.size(), "16 register reads in the batch");
 		assertEquals(10, fake.lastSettleMicros);
 
@@ -135,6 +137,24 @@ class Atm90E36Tests {
 		assertEquals(eic.getTotalActivePower(), m.powerTotal(), 1e-9);
 		assertEquals(eic.getTotalPowerFactor(), m.powerFactorTotal(), 1e-9);
 		assertEquals(eic.getFrequency(), m.frequency(), 1e-9);
+	}
+
+	@Test
+	void repeatedReadMeasurementsReuseOneBatch() {
+		FakeSpiDevice fake = new FakeSpiDevice();
+		Atm90E36 eic = new Atm90E36(fake);
+
+		eic.readMeasurements();
+		eic.readMeasurements();
+		eic.readMeasurements();
+
+		assertEquals(1, fake.batchOpens, "batch created once and reused");
+		assertEquals(3, fake.batchTransfers);
+		assertEquals(0, fake.batchCloses, "not closed until close()");
+
+		eic.close();
+		assertEquals(1, fake.batchCloses);
+		assertFalse(fake.open);
 	}
 
 	@Test

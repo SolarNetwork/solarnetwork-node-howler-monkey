@@ -117,8 +117,7 @@ The ioctl request codes are verified against the header constants in
 The CSV path is the primary use case, and each row needs 16 register reads. Rather than 16
 `ioctl` calls (each with its own JNA dispatch and `~10 µs` settle sleep),
 [`Atm90E36.readMeasurements()`](src/main/java/net/solarnetwork/node/hw/atm90e36/Atm90E36.java)
-builds all 16 read frames and hands them to `SpiDevice.transfer(byte[][], int)`, which
-`LinuxSpiDevice` submits as **one** `SPI_IOC_MESSAGE(16)` `ioctl`.
+builds all 16 read frames once and submits them as **one** `SPI_IOC_MESSAGE(16)` `ioctl`.
 
 The ATM90E36 SPI protocol accesses exactly one register per chip-select cycle (datasheet
 §4.2.1: *"The SPI read/write transaction is CS-low defined. Each transaction can only access
@@ -127,6 +126,15 @@ the last — the kernel toggles CS between them, and a `delay_usecs = 10` hold i
 each. The datasheet's only inter-transaction requirement is `tCSH` (min CS-high) of `2T + 10 ns`,
 so the `10 µs` hold is conservative headroom, not a hard requirement; the max SCLK is 1.2 MHz
 (we use 200 kHz, matching the validated Python path).
+
+**Reusable batch.** For callers that poll frequently, `SpiDevice.batch(byte[][] txFrames, int
+settleMicros)` returns an `AutoCloseable` `Batch` whose `transfer()` re-runs the same frames
+without re-allocating the three native buffers `LinuxSpiDevice` needs per `SPI_IOC_MESSAGE`
+(transmit block, receive block, `spi_ioc_transfer[]` array — the last populated only once).
+`Atm90E36` creates its measurement `Batch` on first `readMeasurements()` and reuses it for
+every call thereafter, releasing it in `close()`; so a 5 Hz (or faster) sampling loop
+allocates only the returned `Measurements` record per tick. The one-shot
+`SpiDevice.transfer(byte[][], int)` is now just `try (var b = batch(...)) { return b.transfer(); }`.
 
 This removes ~15 system calls and all of the per-read thread-sleep jitter per CSV row. If a
 particular SPI controller or `cs-gpios` device-tree setup mishandles `cs_change` inside a
@@ -144,9 +152,9 @@ message, call `LinuxSpiDevice.setMultiTransfer(false)` to fall back to one `ioct
 Host-side only (no hardware): `FakeSpiDevice` emulates the ATM90E36 SPI framing, so the tests
 cover the register byte-swapping, `readRegister` / `writeRegister` framing, the measurement
 scaling factors, the `begin()` configuration / checksum sequence, the batched
-`readMeasurements()` (one call, 16 frames, values matching the individual accessors), and the
-CSV formatting. The `ioctl` transfer paths themselves — single and batched — can only be
-exercised on a real device.
+`readMeasurements()` (16 frames, values matching the individual accessors, one `Batch` reused
+across calls and released on `close()`), and the CSV formatting. The `ioctl` transfer paths
+themselves — single and batched — can only be exercised on a real device.
 
 ## License
 

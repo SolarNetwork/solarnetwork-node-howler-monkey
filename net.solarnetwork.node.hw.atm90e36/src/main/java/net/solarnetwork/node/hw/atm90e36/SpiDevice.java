@@ -76,6 +76,11 @@ public interface SpiDevice extends AutoCloseable {
 	 * ATM90E36, whose SPI protocol accesses one register per chip-select cycle).
 	 * </p>
 	 *
+	 * <p>
+	 * This is a one-shot convenience; to repeat the same batch frequently, hold a
+	 * {@link #batch(byte[][], int)} so its native buffers are allocated once.
+	 * </p>
+	 *
 	 * @param txFrames
 	 *        the frames to clock out, one per transfer
 	 * @param settleMicros
@@ -87,11 +92,77 @@ public interface SpiDevice extends AutoCloseable {
 	 *         if any transfer fails
 	 */
 	default byte[][] transfer(byte[][] txFrames, int settleMicros) {
-		byte[][] rx = new byte[txFrames.length][];
-		for ( int i = 0; i < txFrames.length; i++ ) {
-			rx[i] = transfer(txFrames[i]);
+		try ( Batch b = batch(txFrames, settleMicros) ) {
+			return b.transfer();
 		}
-		return rx;
+	}
+
+	/**
+	 * Create a reusable multi-transfer batch for the given frames.
+	 *
+	 * <p>
+	 * A {@link Batch} runs {@link Batch#transfer()} against the frames it was
+	 * created with, as many times as needed, without re-allocating the native
+	 * buffers a Linux {@code spidev} implementation needs per
+	 * {@code SPI_IOC_MESSAGE}. Use it when a caller polls the same set of frames
+	 * on a short interval; close it when finished.
+	 * </p>
+	 *
+	 * <p>
+	 * The frame contents are re-sent on every {@code transfer()}, so a caller may
+	 * mutate the {@code byte[]} elements in place between calls (for example to
+	 * write different register values); the number and length of the frames must
+	 * not change. This default implementation simply loops
+	 * {@link #transfer(byte[])} and holds nothing.
+	 * </p>
+	 *
+	 * @param txFrames
+	 *        the frames to clock out, one per transfer
+	 * @param settleMicros
+	 *        microseconds to hold after each transfer before releasing
+	 *        chip-select ({@code 0} for none); clamped to a 16-bit value
+	 * @return a batch bound to {@code txFrames}
+	 */
+	default Batch batch(byte[][] txFrames, int settleMicros) {
+		return new Batch() {
+
+			@Override
+			public byte[][] transfer() {
+				byte[][] rx = new byte[txFrames.length][];
+				for ( int i = 0; i < txFrames.length; i++ ) {
+					rx[i] = SpiDevice.this.transfer(txFrames[i]);
+				}
+				return rx;
+			}
+
+			@Override
+			public void close() {
+				// nothing to release
+			}
+		};
+	}
+
+	/**
+	 * A reusable multi-transfer batch bound to a fixed set of frames. Obtained
+	 * from {@link SpiDevice#batch(byte[][], int)}.
+	 */
+	interface Batch extends AutoCloseable {
+
+		/**
+		 * Run the batch's transfers once.
+		 *
+		 * @return one received frame per bound frame, each the same length as its
+		 *         corresponding input
+		 * @throws SpiException
+		 *         if any transfer fails, or the batch is closed
+		 */
+		byte[][] transfer();
+
+		/**
+		 * Release any resources held for the batch. Never throws; idempotent.
+		 */
+		@Override
+		void close();
 	}
 
 	/**

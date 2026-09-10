@@ -153,10 +153,12 @@ public class LinuxSpiDevice implements SpiDevice {
 	 * Enable or disable multi-transfer batching.
 	 *
 	 * <p>
-	 * When enabled (the default), {@link #transfer(byte[][], int)} issues one
-	 * {@code SPI_IOC_MESSAGE} for the whole batch. Disable it to fall back to one
-	 * {@code ioctl} per frame if a particular SPI controller or device-tree
-	 * chip-select configuration mishandles {@code cs_change} within a message.
+	 * When enabled (the default), {@link #transfer(byte[][], int)} and
+	 * {@link #batch(byte[][], int)} issue one {@code SPI_IOC_MESSAGE} for the
+	 * whole batch. Disable it to fall back to one {@code ioctl} per frame if a
+	 * particular SPI controller or device-tree chip-select configuration
+	 * mishandles {@code cs_change} within a message. Only takes effect for
+	 * batches created afterwards.
 	 * </p>
 	 *
 	 * @param batch
@@ -245,46 +247,56 @@ public class LinuxSpiDevice implements SpiDevice {
 	}
 
 	@Override
-	public synchronized byte[][] transfer(byte[][] txFrames, int settleMicros) {
+	public synchronized SpiDevice.Batch batch(byte[][] txFrames, int settleMicros) {
 		if ( fd < 0 ) {
 			throw new SpiException("SPI device " + path + " is not open");
 		}
-		final int n = txFrames.length;
-		if ( n == 0 ) {
-			return new byte[0][];
+		if ( txFrames.length > 1 && multiTransfer ) {
+			return new MultiTransferBatch(txFrames, settleMicros);
 		}
-		if ( n == 1 || !multiTransfer ) {
-			byte[][] rx = new byte[n][];
+		// one frame, or batching disabled: fall back to one ioctl per frame
+		return SpiDevice.super.batch(txFrames, settleMicros);
+	}
+
+	/**
+	 * A {@link SpiDevice.Batch} that issues one {@code SPI_IOC_MESSAGE} per
+	 * {@link #transfer()}, reusing the three native buffers it allocates up
+	 * front: the transmit and receive data blocks and the
+	 * {@code spi_ioc_transfer[]} array (populated once here, since only the
+	 * transmit bytes change between calls).
+	 */
+	private final class MultiTransferBatch implements SpiDevice.Batch {
+
+		private final byte[][] txFrames;
+		private final int[] offsets;
+		private final int n;
+		private final Memory txMem;
+		private final Memory rxMem;
+		private final Memory msg;
+		private boolean closed;
+
+		MultiTransferBatch(byte[][] txFrames, int settleMicros) {
+			this.n = txFrames.length;
+			this.txFrames = txFrames;
+			this.offsets = new int[n];
+			int total = 0;
 			for ( int i = 0; i < n; i++ ) {
-				rx[i] = transfer(txFrames[i]);
+				offsets[i] = total;
+				total += txFrames[i].length;
 			}
-			return rx;
-		}
-
-		int total = 0;
-		final int[] offsets = new int[n];
-		for ( int i = 0; i < n; i++ ) {
-			offsets[i] = total;
-			total += txFrames[i].length;
-		}
-		final short delay = (short) Math.max(0, Math.min(0xFFFF, settleMicros));
-
-		try (Memory txMem = new Memory(total == 0 ? 1 : total);
-				Memory rxMem = new Memory(total == 0 ? 1 : total);
-				Memory msg = new Memory((long) n * SPI_IOC_TRANSFER_SIZE)) {
+			short delay = (short) Math.max(0, Math.min(0xFFFF, settleMicros));
+			this.txMem = new Memory(total == 0 ? 1 : total);
+			this.rxMem = new Memory(total == 0 ? 1 : total);
+			this.msg = new Memory((long) n * SPI_IOC_TRANSFER_SIZE);
 			rxMem.clear();
 			msg.clear();
 			long txBase = Pointer.nativeValue(txMem);
 			long rxBase = Pointer.nativeValue(rxMem);
 			for ( int i = 0; i < n; i++ ) {
-				byte[] frame = txFrames[i];
-				if ( frame.length > 0 ) {
-					txMem.write(offsets[i], frame, 0, frame.length);
-				}
 				int s = i * SPI_IOC_TRANSFER_SIZE;
 				msg.setLong(s + XFER_TX_BUF, txBase + offsets[i]);
 				msg.setLong(s + XFER_RX_BUF, rxBase + offsets[i]);
-				msg.setInt(s + XFER_LEN, frame.length);
+				msg.setInt(s + XFER_LEN, txFrames[i].length);
 				msg.setInt(s + XFER_SPEED_HZ, 0); // use the bus default
 				msg.setShort(s + XFER_DELAY_USECS, delay);
 				msg.setByte(s + XFER_BITS_PER_WORD, (byte) 0);
@@ -294,22 +306,53 @@ public class LinuxSpiDevice implements SpiDevice {
 				// there - CS is released after the final transfer regardless.
 				msg.setByte(s + XFER_CS_CHANGE, (byte) (i < n - 1 ? 1 : 0));
 			}
+		}
 
-			int rc = C.ioctl(fd, new NativeLong(spiIocMessage(n), true), msg);
-			if ( rc < 0 ) {
-				throw new SpiException("SPI_IOC_MESSAGE(" + n + ") failed on " + path);
+		@Override
+		public byte[][] transfer() {
+			synchronized ( LinuxSpiDevice.this ) {
+				if ( closed ) {
+					throw new SpiException("SPI batch on " + path + " is closed");
+				}
+				if ( fd < 0 ) {
+					throw new SpiException("SPI device " + path + " is not open");
+				}
+				for ( int i = 0; i < n; i++ ) {
+					byte[] frame = txFrames[i];
+					if ( frame.length > 0 ) {
+						txMem.write(offsets[i], frame, 0, frame.length);
+					}
+				}
+				try {
+					int rc = C.ioctl(fd, new NativeLong(spiIocMessage(n), true), msg);
+					if ( rc < 0 ) {
+						throw new SpiException("SPI_IOC_MESSAGE(" + n + ") failed on " + path);
+					}
+					byte[][] out = new byte[n][];
+					for ( int i = 0; i < n; i++ ) {
+						out[i] = rxMem.getByteArray(offsets[i], txFrames[i].length);
+					}
+					// keep the batch (and its native buffers) reachable across the ioctl
+					Reference.reachabilityFence(this);
+					return out;
+				} catch ( LastErrorException e ) {
+					throw new SpiException(
+							"SPI batch transfer failed on " + path + ": " + e.getMessage(), e);
+				}
 			}
+		}
 
-			byte[][] out = new byte[n][];
-			for ( int i = 0; i < n; i++ ) {
-				out[i] = rxMem.getByteArray(offsets[i], txFrames[i].length);
+		@Override
+		public void close() {
+			synchronized ( LinuxSpiDevice.this ) {
+				if ( closed ) {
+					return;
+				}
+				closed = true;
+				txMem.close();
+				rxMem.close();
+				msg.close();
 			}
-			Reference.reachabilityFence(txMem);
-			Reference.reachabilityFence(rxMem);
-			return out;
-		} catch ( LastErrorException e ) {
-			throw new SpiException(
-					"SPI batch transfer failed on " + path + ": " + e.getMessage(), e);
 		}
 	}
 
