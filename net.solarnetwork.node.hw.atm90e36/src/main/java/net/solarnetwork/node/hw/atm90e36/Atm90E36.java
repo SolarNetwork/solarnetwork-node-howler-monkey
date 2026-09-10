@@ -49,6 +49,14 @@ public class Atm90E36 {
 	/** Address bit 15 set marks a register read (clear marks a write). */
 	private static final int READ_FLAG = 0x8000;
 
+	/**
+	 * Microseconds to hold between register accesses in a batched read. The
+	 * ATM90E36 only requires a sub-microsecond chip-select gap (datasheet
+	 * {@code tCSH}); this matches the more conservative spacing the per-register
+	 * Python path used.
+	 */
+	private static final int BATCH_SETTLE_MICROS = 10;
+
 	// STATUS REGISTERS
 	private static final int SoftReset = 0x00;
 	private static final int SysStatus0 = 0x01;
@@ -373,6 +381,31 @@ public class Atm90E36 {
 		return ((v >> 8) & 0xFF) | ((v << 8) & 0xFF00);
 	}
 
+	/**
+	 * Read several registers in a single batched SPI operation (one
+	 * {@code ioctl}), each still framed by its own chip-select cycle as the
+	 * ATM90E36 protocol requires.
+	 *
+	 * @param addresses
+	 *        the register addresses to read, in order
+	 * @return the register values, one per address, each {@code 0}-{@code 65535}
+	 */
+	private int[] readRegisters(int... addresses) {
+		byte[][] frames = new byte[addresses.length][];
+		for ( int i = 0; i < addresses.length; i++ ) {
+			int addr = swap16((addresses[i] | READ_FLAG) & 0xFFFF);
+			frames[i] = new byte[] { (byte) ((addr >> 8) & 0xFF), (byte) (addr & 0xFF), 0x00, 0x00 };
+		}
+		byte[][] responses = spi.transfer(frames, BATCH_SETTLE_MICROS);
+		int[] values = new int[addresses.length];
+		for ( int i = 0; i < responses.length; i++ ) {
+			byte[] r = responses[i];
+			int raw = ((r[2] & 0xFF) << 8) | (r[3] & 0xFF);
+			values[i] = swap16(raw) & 0xFFFF;
+		}
+		return values;
+	}
+
 	private int writeAndGetChecksum(int address, int value, int checksum) {
 		writeRegister(address, value);
 		if ( address != CSZero && address != CSOne && address != CSTwo && address != CSThree ) {
@@ -386,6 +419,64 @@ public class Atm90E36 {
 			return -(((~v) & 0xFFFF) + 1);
 		}
 		return v;
+	}
+
+	// ========================================================================
+	// BATCHED MEASUREMENTS
+	// ========================================================================
+
+	/**
+	 * A snapshot of the measurements written to each CSV row: per-phase and total
+	 * RMS voltage, RMS current, active power, plus total power factor and line
+	 * frequency.
+	 *
+	 * @param voltageA
+	 *        phase A voltage, V
+	 * @param voltageB
+	 *        phase B voltage, V
+	 * @param voltageC
+	 *        phase C voltage, V
+	 * @param currentA
+	 *        phase A current, A
+	 * @param currentB
+	 *        phase B current, A
+	 * @param currentC
+	 *        phase C current, A
+	 * @param powerA
+	 *        phase A active power, W
+	 * @param powerB
+	 *        phase B active power, W
+	 * @param powerC
+	 *        phase C active power, W
+	 * @param powerTotal
+	 *        total active power, W
+	 * @param powerFactorTotal
+	 *        total power factor
+	 * @param frequency
+	 *        line frequency, Hz
+	 */
+	public record Measurements(double voltageA, double voltageB, double voltageC, double currentA,
+			double currentB, double currentC, double powerA, double powerB, double powerC,
+			double powerTotal, double powerFactorTotal, double frequency) {
+	}
+
+	/**
+	 * Read every register needed for a CSV row in a single batched SPI operation.
+	 *
+	 * <p>
+	 * This issues one {@code ioctl} covering all 16 register reads instead of one
+	 * per register, which both cuts system-call overhead and removes the
+	 * per-access thread-sleep jitter of the individual accessor methods.
+	 * </p>
+	 *
+	 * @return the measurement snapshot
+	 */
+	public Measurements readMeasurements() {
+		int[] r = readRegisters(UrmsA, UrmsB, UrmsC, IrmsA, IrmsB, IrmsC, PmeanA, PmeanALSB, PmeanB,
+				PmeanBLSB, PmeanC, PmeanCLSB, PmeanT, PmeanTLSB, PFmeanT, Freq);
+		return new Measurements(r[0] / 100.0, r[1] / 100.0, r[2] / 100.0, r[3] / 1000.0, r[4] / 1000.0,
+				r[5] / 1000.0, power(r[6], r[7]), power(r[8], r[9]), power(r[10], r[11]),
+				power(r[12], r[13]), signed16(r[14]) / 1000.0, r[15] / 100.0);
 	}
 
 	// VOLTAGE
@@ -429,10 +520,13 @@ public class Atm90E36 {
 
 	// ACTIVE POWER
 
+	/** Scale a signed MSB + unsigned LSB power register pair to watts / var. */
+	private static double power(int msbRaw, int lsbRaw) {
+		return (signed16(msbRaw) * 65536.0 + lsbRaw) * 0.00032;
+	}
+
 	private double activePower(int msbReg, int lsbReg) {
-		int val = signed16(readRegister(msbReg));
-		int valLsb = readRegister(lsbReg);
-		return ((double) val * 65536.0 + valLsb) * 0.00032;
+		return power(readRegister(msbReg), readRegister(lsbReg));
 	}
 
 	/** @return phase A active power, in watts */
@@ -458,9 +552,7 @@ public class Atm90E36 {
 	// REACTIVE POWER
 
 	private double reactivePower(int msbReg, int lsbReg) {
-		int val = signed16(readRegister(msbReg));
-		int valLsb = readRegister(lsbReg);
-		return ((double) val * 65536.0 + valLsb) * 0.00032;
+		return power(readRegister(msbReg), readRegister(lsbReg));
 	}
 
 	/** @return phase A reactive power, in var */

@@ -334,6 +334,11 @@ public final class MeterTool {
 	 * Build one CSV data row, matching the column order and numeric precision of
 	 * {@code meter-tool-2.py}.
 	 *
+	 * <p>
+	 * All 13 measurement columns come from a single batched SPI read
+	 * ({@link Atm90E36#readMeasurements()}).
+	 * </p>
+	 *
 	 * @param eic
 	 *        the meter to read
 	 * @param timestamp
@@ -342,12 +347,11 @@ public final class MeterTool {
 	 * @return the CSV row (no trailing newline)
 	 */
 	static String csvRow(Atm90E36 eic, Instant timestamp) {
-		return String.join(",", DateTimeFormatter.ISO_INSTANT.format(timestamp),
-				fmt2(eic.getLineVoltageA()), fmt2(eic.getLineVoltageB()), fmt2(eic.getLineVoltageC()),
-				fmt3(eic.getLineCurrentA()), fmt3(eic.getLineCurrentB()), fmt3(eic.getLineCurrentC()),
-				fmt2(eic.getActivePowerA()), fmt2(eic.getActivePowerB()), fmt2(eic.getActivePowerC()),
-				fmt2(eic.getTotalActivePower()), fmt3(eic.getTotalPowerFactor()),
-				fmt2(eic.getFrequency()));
+		Atm90E36.Measurements m = eic.readMeasurements();
+		return String.join(",", DateTimeFormatter.ISO_INSTANT.format(timestamp), fmt2(m.voltageA()),
+				fmt2(m.voltageB()), fmt2(m.voltageC()), fmt3(m.currentA()), fmt3(m.currentB()),
+				fmt3(m.currentC()), fmt2(m.powerA()), fmt2(m.powerB()), fmt2(m.powerC()),
+				fmt2(m.powerTotal()), fmt3(m.powerFactorTotal()), fmt2(m.frequency()));
 	}
 
 	private static String fmt2(double v) {

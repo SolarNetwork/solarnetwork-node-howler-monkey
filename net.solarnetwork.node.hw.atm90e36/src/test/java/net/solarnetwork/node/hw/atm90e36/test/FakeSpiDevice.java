@@ -73,6 +73,12 @@ public class FakeSpiDevice implements SpiDevice {
 	public int maxSpeedHz = -1;
 	public int bitsPerWord = -1;
 
+	/** Number of times the batched {@link #transfer(byte[][], int)} was called. */
+	public int batchCalls = 0;
+
+	/** The {@code settleMicros} argument from the last batched call. */
+	public int lastSettleMicros = -1;
+
 	private static int swap16(int v) {
 		return ((v >> 8) & 0xFF) | ((v << 8) & 0xFF00);
 	}
@@ -109,6 +115,17 @@ public class FakeSpiDevice implements SpiDevice {
 		writes.add(new Write(address, value));
 		registers.put(address, value);
 		return new byte[4];
+	}
+
+	@Override
+	public byte[][] transfer(byte[][] txFrames, int settleMicros) {
+		batchCalls++;
+		lastSettleMicros = settleMicros;
+		byte[][] rx = new byte[txFrames.length][];
+		for ( int i = 0; i < txFrames.length; i++ ) {
+			rx[i] = transfer(txFrames[i]);
+		}
+		return rx;
 	}
 
 	@Override

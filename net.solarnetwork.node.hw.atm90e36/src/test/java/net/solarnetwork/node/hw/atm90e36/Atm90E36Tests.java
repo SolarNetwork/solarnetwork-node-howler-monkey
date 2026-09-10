@@ -87,6 +87,57 @@ class Atm90E36Tests {
 	}
 
 	@Test
+	void readMeasurementsUsesOneBatchedTransfer() {
+		FakeSpiDevice fake = new FakeSpiDevice();
+		fake.registers.put(0xD9, 65427); // UrmsA -> 654.27 V
+		fake.registers.put(0xDA, 24000); // UrmsB -> 240.00 V
+		fake.registers.put(0xDD, 1500); //  IrmsA -> 1.500 A
+		fake.registers.put(0xB1, 3); //     PmeanA -> (3*65536)*0.00032 = 62.91456 W
+		fake.registers.put(0xC1, 0); //     PmeanA LSB
+		fake.registers.put(0xB0, 0xFFFF); // PmeanT -> -1 -> -20.97152 W
+		fake.registers.put(0xC0, 0); //     PmeanT LSB
+		fake.registers.put(0xBC, 0xFC18); // PFmeanT -> -1000 -> -1.0
+		fake.registers.put(0xF8, 6000); //  Freq -> 60.00 Hz
+
+		Atm90E36.Measurements m = new Atm90E36(fake).readMeasurements();
+
+		assertEquals(1, fake.batchCalls, "one ioctl for the whole row");
+		assertEquals(16, fake.txFrames.size(), "16 register reads in the batch");
+		assertEquals(10, fake.lastSettleMicros);
+
+		assertEquals(654.27, m.voltageA(), 1e-9);
+		assertEquals(240.00, m.voltageB(), 1e-9);
+		assertEquals(0.0, m.voltageC(), 1e-9);
+		assertEquals(1.5, m.currentA(), 1e-9);
+		assertEquals(62.91456, m.powerA(), 1e-9);
+		assertEquals(-20.97152, m.powerTotal(), 1e-9);
+		assertEquals(-1.0, m.powerFactorTotal(), 1e-9);
+		assertEquals(60.0, m.frequency(), 1e-9);
+	}
+
+	@Test
+	void readMeasurementsMatchesIndividualAccessors() {
+		FakeSpiDevice fake = new FakeSpiDevice();
+		int[] regs = { 0xD9, 0xDA, 0xDB, 0xDD, 0xDE, 0xDF, 0xB1, 0xC1, 0xB2, 0xC2, 0xB3, 0xC3, 0xB0,
+				0xC0, 0xBC, 0xF8 };
+		for ( int i = 0; i < regs.length; i++ ) {
+			fake.registers.put(regs[i], (i * 7919) & 0xFFFF); // arbitrary distinct values
+		}
+		Atm90E36 eic = new Atm90E36(fake);
+
+		Atm90E36.Measurements m = eic.readMeasurements();
+
+		assertEquals(eic.getLineVoltageA(), m.voltageA(), 1e-9);
+		assertEquals(eic.getLineVoltageC(), m.voltageC(), 1e-9);
+		assertEquals(eic.getLineCurrentB(), m.currentB(), 1e-9);
+		assertEquals(eic.getActivePowerA(), m.powerA(), 1e-9);
+		assertEquals(eic.getActivePowerC(), m.powerC(), 1e-9);
+		assertEquals(eic.getTotalActivePower(), m.powerTotal(), 1e-9);
+		assertEquals(eic.getTotalPowerFactor(), m.powerFactorTotal(), 1e-9);
+		assertEquals(eic.getFrequency(), m.frequency(), 1e-9);
+	}
+
+	@Test
 	void lineVoltageScaling() {
 		FakeSpiDevice fake = new FakeSpiDevice();
 		fake.registers.put(UrmsA, 65427);

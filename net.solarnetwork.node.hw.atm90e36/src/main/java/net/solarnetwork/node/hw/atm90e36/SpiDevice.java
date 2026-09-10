@@ -65,6 +65,36 @@ public interface SpiDevice extends AutoCloseable {
 	byte[] transfer(byte[] tx);
 
 	/**
+	 * Perform several full-duplex transfers as one operation, each framed by its
+	 * own chip-select assertion.
+	 *
+	 * <p>
+	 * Implementations backed by Linux {@code spidev} issue this as a single
+	 * {@code SPI_IOC_MESSAGE} {@code ioctl}, avoiding a system call per transfer.
+	 * Between transfers the chip-select line is released and re-asserted, so each
+	 * frame is an independent bus transaction (required by devices such as the
+	 * ATM90E36, whose SPI protocol accesses one register per chip-select cycle).
+	 * </p>
+	 *
+	 * @param txFrames
+	 *        the frames to clock out, one per transfer
+	 * @param settleMicros
+	 *        microseconds to hold after each transfer's last bit before releasing
+	 *        chip-select ({@code 0} for none); clamped to a 16-bit value
+	 * @return one received frame per input frame, each the same length as its
+	 *         corresponding input
+	 * @throws SpiException
+	 *         if any transfer fails
+	 */
+	default byte[][] transfer(byte[][] txFrames, int settleMicros) {
+		byte[][] rx = new byte[txFrames.length][];
+		for ( int i = 0; i < txFrames.length; i++ ) {
+			rx[i] = transfer(txFrames[i]);
+		}
+		return rx;
+	}
+
+	/**
 	 * Close the device, releasing the underlying file descriptor.
 	 *
 	 * <p>

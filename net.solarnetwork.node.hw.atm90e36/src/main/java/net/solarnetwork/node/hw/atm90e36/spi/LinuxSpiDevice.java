@@ -95,7 +95,9 @@ public class LinuxSpiDevice implements SpiDevice {
 	private static final int XFER_RX_BUF = 8; // __u64
 	private static final int XFER_LEN = 16; // __u32
 	private static final int XFER_SPEED_HZ = 20; // __u32
+	private static final int XFER_DELAY_USECS = 24; // __u16
 	private static final int XFER_BITS_PER_WORD = 26; // __u8
+	private static final int XFER_CS_CHANGE = 27; // __u8
 
 	/**
 	 * Minimal libc binding: just enough for spidev access.
@@ -119,6 +121,7 @@ public class LinuxSpiDevice implements SpiDevice {
 
 	private final String path;
 	private int fd = -1;
+	private boolean multiTransfer = true;
 
 	/**
 	 * Construct for a SPI bus and chip-select.
@@ -141,6 +144,23 @@ public class LinuxSpiDevice implements SpiDevice {
 	public LinuxSpiDevice(String path) {
 		super();
 		this.path = path;
+	}
+
+	/**
+	 * Enable or disable multi-transfer batching.
+	 *
+	 * <p>
+	 * When enabled (the default), {@link #transfer(byte[][], int)} issues one
+	 * {@code SPI_IOC_MESSAGE} for the whole batch. Disable it to fall back to one
+	 * {@code ioctl} per frame if a particular SPI controller or device-tree
+	 * chip-select configuration mishandles {@code cs_change} within a message.
+	 * </p>
+	 *
+	 * @param batch
+	 *        {@code true} to batch, {@code false} to issue one transfer per frame
+	 */
+	public void setMultiTransfer(boolean batch) {
+		this.multiTransfer = batch;
 	}
 
 	@Override
@@ -218,6 +238,75 @@ public class LinuxSpiDevice implements SpiDevice {
 			return rx;
 		} catch ( LastErrorException e ) {
 			throw new SpiException("SPI transfer failed on " + path + ": " + e.getMessage(), e);
+		}
+	}
+
+	@Override
+	public synchronized byte[][] transfer(byte[][] txFrames, int settleMicros) {
+		if ( fd < 0 ) {
+			throw new SpiException("SPI device " + path + " is not open");
+		}
+		final int n = txFrames.length;
+		if ( n == 0 ) {
+			return new byte[0][];
+		}
+		if ( n == 1 || !multiTransfer ) {
+			byte[][] rx = new byte[n][];
+			for ( int i = 0; i < n; i++ ) {
+				rx[i] = transfer(txFrames[i]);
+			}
+			return rx;
+		}
+
+		int total = 0;
+		final int[] offsets = new int[n];
+		for ( int i = 0; i < n; i++ ) {
+			offsets[i] = total;
+			total += txFrames[i].length;
+		}
+		final short delay = (short) Math.max(0, Math.min(0xFFFF, settleMicros));
+
+		try (Memory txMem = new Memory(total == 0 ? 1 : total);
+				Memory rxMem = new Memory(total == 0 ? 1 : total);
+				Memory msg = new Memory((long) n * SPI_IOC_TRANSFER_SIZE)) {
+			rxMem.clear();
+			msg.clear();
+			long txBase = Pointer.nativeValue(txMem);
+			long rxBase = Pointer.nativeValue(rxMem);
+			for ( int i = 0; i < n; i++ ) {
+				byte[] frame = txFrames[i];
+				if ( frame.length > 0 ) {
+					txMem.write(offsets[i], frame, 0, frame.length);
+				}
+				int s = i * SPI_IOC_TRANSFER_SIZE;
+				msg.setLong(s + XFER_TX_BUF, txBase + offsets[i]);
+				msg.setLong(s + XFER_RX_BUF, rxBase + offsets[i]);
+				msg.setInt(s + XFER_LEN, frame.length);
+				msg.setInt(s + XFER_SPEED_HZ, 0); // use the bus default
+				msg.setShort(s + XFER_DELAY_USECS, delay);
+				msg.setByte(s + XFER_BITS_PER_WORD, (byte) 0);
+				// cs_change=1 toggles chip-select before the next transfer, making
+				// each frame its own bus transaction. On the last transfer its
+				// meaning inverts (it would *hold* CS asserted), so leave it 0
+				// there - CS is released after the final transfer regardless.
+				msg.setByte(s + XFER_CS_CHANGE, (byte) (i < n - 1 ? 1 : 0));
+			}
+
+			int rc = C.ioctl(fd, new NativeLong(spiIocMessage(n), true), msg);
+			if ( rc < 0 ) {
+				throw new SpiException("SPI_IOC_MESSAGE(" + n + ") failed on " + path);
+			}
+
+			byte[][] out = new byte[n][];
+			for ( int i = 0; i < n; i++ ) {
+				out[i] = rxMem.getByteArray(offsets[i], txFrames[i].length);
+			}
+			Reference.reachabilityFence(txMem);
+			Reference.reachabilityFence(rxMem);
+			return out;
+		} catch ( LastErrorException e ) {
+			throw new SpiException(
+					"SPI batch transfer failed on " + path + ": " + e.getMessage(), e);
 		}
 	}
 

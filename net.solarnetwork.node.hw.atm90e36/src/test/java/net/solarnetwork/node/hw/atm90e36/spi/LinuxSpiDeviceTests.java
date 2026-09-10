@@ -59,6 +59,12 @@ class LinuxSpiDeviceTests {
 	}
 
 	@Test
+	void spiIocMessageForSixteenTransfers() {
+		// _IOW('k', 0, char[512]) -- the batched CSV read
+		assertEquals(0x42006b00L, LinuxSpiDevice.spiIocMessage(16));
+	}
+
+	@Test
 	void transferStructIs32Bytes() {
 		assertEquals(32, LinuxSpiDevice.SPI_IOC_TRANSFER_SIZE);
 	}
