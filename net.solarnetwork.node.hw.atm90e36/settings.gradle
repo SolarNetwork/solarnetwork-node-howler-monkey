@@ -1,0 +1,11 @@
+pluginManagement {
+	repositories {
+		gradlePluginPortal()
+		mavenCentral()
+	}
+	plugins {
+		id 'biz.aQute.bnd.builder' version '7.4.0'
+	}
+}
+
+rootProject.name = 'net.solarnetwork.node.hw.atm90e36'

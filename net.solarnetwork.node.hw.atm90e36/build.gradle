@@ -1,0 +1,56 @@
+plugins {
+	id 'application'
+	id 'biz.aQute.bnd.builder'
+}
+
+group = 'net.solarnetwork.node'
+version = '1.0.0'
+description = 'ATM90E36 energy meter support (Linux spidev via JNA) and the meter-tool CLI'
+
+ext {
+	jnaVersion = '5.17.0'
+}
+
+java {
+	toolchain {
+		languageVersion = JavaLanguageVersion.of(17)
+	}
+}
+
+repositories {
+	mavenCentral()
+}
+
+dependencies {
+	implementation "net.java.dev.jna:jna:${jnaVersion}"
+
+	// JSpecify nullability annotations (RUNTIME retention, but the JVM ignores
+	// missing annotation classes, so compileOnly is enough); in OSGi the
+	// org.jspecify.annotations package is imported and provided by its bundle.
+	compileOnly 'org.jspecify:jspecify:1.0.0'
+	testCompileOnly 'org.jspecify:jspecify:1.0.0'
+
+	testImplementation 'org.junit.jupiter:junit-jupiter:5.10.2'
+	testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+application {
+	mainClass = 'net.solarnetwork.node.hw.atm90e36.tool.MeterTool'
+	applicationName = 'meter-tool'
+}
+
+// let `gradle run` talk to the real console for the interactive calibrate mode
+tasks.named('run', JavaExec) {
+	standardInput = System.in
+}
+
+tasks.named('test', Test) {
+	useJUnitPlatform()
+}
+
+// build an OSGi bundle from bnd.bnd
+tasks.named('jar', Jar) {
+	bundle {
+		bndfile = file('bnd.bnd')
+	}
+}

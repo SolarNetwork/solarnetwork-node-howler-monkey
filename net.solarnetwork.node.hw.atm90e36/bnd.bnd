@@ -1,0 +1,27 @@
+Bundle-Name:                ATM90E36 Energy Meter Support
+Bundle-SymbolicName:        net.solarnetwork.node.hw.atm90e36
+Bundle-Description:          SPI driver for the ATM90E36 poly-phase energy metering IC \
+                             (Linux spidev accessed via JNA), plus the meter-tool CLI.
+Bundle-Vendor:               SolarNetwork Foundation
+Bundle-License:              GPL-2.0-or-later
+Bundle-DocURL:               https://github.com/SolarNetwork/solarnetwork-node-howler-monkey
+Automatic-Module-Name:       net.solarnetwork.node.hw.atm90e36
+
+# Public API: the SPI abstraction plus the ATM90E36 driver. Everything else in
+# the project (the JNA-based SPI implementation in .spi and the CLI in .tool) is
+# included by the bnd-gradle plugin automatically and stays bundle-private.
+Export-Package: \
+	net.solarnetwork.node.hw.atm90e36
+
+# JNA ships as an OSGi bundle exporting com.sun.jna; it must be installed in the
+# framework alongside this bundle, as must the JSpecify annotations bundle.
+# Everything else resolves from the JRE.
+Import-Package: \
+	com.sun.jna;version="[5.17,6)",\
+	org.jspecify.annotations;version="[1.0,2.0)",\
+	*
+
+# Also runnable as a plain executable jar (java -jar) when JNA is on the classpath.
+Main-Class:                  net.solarnetwork.node.hw.atm90e36.tool.MeterTool
+
+-sources:                    false
