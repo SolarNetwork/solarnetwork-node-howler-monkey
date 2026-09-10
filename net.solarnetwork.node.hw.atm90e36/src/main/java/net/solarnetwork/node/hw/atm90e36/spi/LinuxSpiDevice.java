@@ -24,10 +24,10 @@ package net.solarnetwork.node.hw.atm90e36.spi;
 
 import java.lang.ref.Reference;
 import com.sun.jna.LastErrorException;
-import com.sun.jna.Library;
 import com.sun.jna.Memory;
 import com.sun.jna.Native;
 import com.sun.jna.NativeLong;
+import com.sun.jna.Platform;
 import com.sun.jna.Pointer;
 import net.solarnetwork.node.hw.atm90e36.SpiDevice;
 import net.solarnetwork.node.hw.atm90e36.SpiException;
@@ -64,7 +64,6 @@ public class LinuxSpiDevice implements SpiDevice {
 	private static final int IOC_SIZESHIFT = IOC_TYPESHIFT + IOC_TYPEBITS; // 16
 	private static final int IOC_DIRSHIFT = IOC_SIZESHIFT + IOC_SIZEBITS; // 30
 	private static final int IOC_WRITE = 1;
-	private static final int IOC_READ = 2;
 
 	// package-private so LinuxSpiDeviceTests can verify the encoded values
 	static long ioc(int dir, int type, int nr, int size) {
@@ -104,20 +103,24 @@ public class LinuxSpiDevice implements SpiDevice {
 	 *
 	 * <p>
 	 * Each method declares {@link LastErrorException} so JNA captures
-	 * {@code errno} on failure.
+	 * {@code errno} on failure. Using JNA direct mapping for better
+	 * performance.
 	 * </p>
 	 */
-	interface CLib extends Library {
+	static class C {
 
-		int open(String pathname, int flags) throws LastErrorException;
+		public static native int open(String pathname, int flags) throws LastErrorException;
 
-		int close(int fd) throws LastErrorException;
+		public static native int close(int fd) throws LastErrorException;
 
-		int ioctl(int fd, NativeLong request, Pointer arg) throws LastErrorException;
+		public static native int ioctl(int fd, NativeLong request, Pointer arg)
+				throws LastErrorException;
+
+		static {
+			Native.register(Platform.C_LIBRARY_NAME);
+		}
 
 	}
-
-	private static final CLib C = Native.load("c", CLib.class);
 
 	private final String path;
 	private int fd = -1;
