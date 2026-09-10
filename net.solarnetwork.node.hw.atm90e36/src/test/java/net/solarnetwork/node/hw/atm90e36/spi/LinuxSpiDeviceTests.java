@@ -22,6 +22,7 @@
 
 package net.solarnetwork.node.hw.atm90e36.spi;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import org.junit.jupiter.api.Test;
 
@@ -67,6 +68,14 @@ class LinuxSpiDeviceTests {
 	@Test
 	void transferStructIs32Bytes() {
 		assertEquals(32, LinuxSpiDevice.SPI_IOC_TRANSFER_SIZE);
+	}
+
+	@Test
+	void unregisterNativeMethodsIsSafeWhenUnusedAndRepeated() {
+		// the libc binding is not touched by these tests, so this is a no-op,
+		// but it must not throw - and calling it twice must be fine
+		assertDoesNotThrow(LinuxSpiDevice::unregisterNativeMethods);
+		assertDoesNotThrow(LinuxSpiDevice::unregisterNativeMethods);
 	}
 
 }

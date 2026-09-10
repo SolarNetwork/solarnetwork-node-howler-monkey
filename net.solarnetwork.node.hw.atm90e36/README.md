@@ -14,7 +14,7 @@ Python `spidev` package for `spidev2`.
 | Package | Visibility | Contents |
 |---|---|---|
 | `net.solarnetwork.node.hw.atm90e36` | exported | [`SpiDevice`](src/main/java/net/solarnetwork/node/hw/atm90e36/SpiDevice.java) abstraction, [`SpiException`](src/main/java/net/solarnetwork/node/hw/atm90e36/SpiException.java), and the [`Atm90E36`](src/main/java/net/solarnetwork/node/hw/atm90e36/Atm90E36.java) register-level driver (a direct port of the Python `ATM90E36` class) |
-| `net.solarnetwork.node.hw.atm90e36.spi` | bundle-private | [`LinuxSpiDevice`](src/main/java/net/solarnetwork/node/hw/atm90e36/spi/LinuxSpiDevice.java) — the JNA `spidev` implementation |
+| `net.solarnetwork.node.hw.atm90e36.spi` | bundle-private | [`LinuxSpiDevice`](src/main/java/net/solarnetwork/node/hw/atm90e36/spi/LinuxSpiDevice.java) — the JNA `spidev` implementation — and [`Activator`](src/main/java/net/solarnetwork/node/hw/atm90e36/spi/Activator.java), the bundle activator that unbinds it on stop |
 | `net.solarnetwork.node.hw.atm90e36.tool` | bundle-private | [`MeterTool`](src/main/java/net/solarnetwork/node/hw/atm90e36/tool/MeterTool.java) — the CLI (`main`, plus `runCsvMode()` / `runCalibrationMode()`) |
 
 The driver depends only on the `SpiDevice` interface, so it can be reused with a mock transport
@@ -73,15 +73,17 @@ microsecond precision Python's `datetime` emits.
 
 ## Deploy as an OSGi bundle (SolarNode / Equinox)
 
-This bundle imports two packages that the framework must provide:
+This bundle imports three packages the framework must provide:
 
 1. Install the **JNA bundle**: `net.java.dev.jna:jna:5.17.0` (exports
    `com.sun.jna`); this bundle imports `com.sun.jna;version="[5.17,6)"`.
 2. Install the **JSpecify bundle**: `org.jspecify:jspecify:1.0.0` (exports
    `org.jspecify.annotations`); imported as `org.jspecify.annotations;version="[1.0,2.0)"`.
    SolarNode already ships this.
-3. Install this bundle.
-4. Invoke `MeterTool.runCsvMode()` / `runCalibrationMode()` from your own component, or wrap
+3. `org.osgi.framework;version="[1.10,2)"` — provided by the framework itself, for the
+   `Bundle-Activator`.
+4. Install this bundle.
+5. Invoke `MeterTool.runCsvMode()` / `runCalibrationMode()` from your own component, or wrap
    them in a Gogo command:
 
    ```java
@@ -101,6 +103,22 @@ This bundle imports two packages that the framework must provide:
   is mounted `noexec`, point JNA elsewhere with `-Djna.tmpdir=/var/tmp/jna` (writable, exec)
   or install the OS `libjna-java` / `libjnidispatch-java` package and set
   `-Djna.nosys=false`.
+
+### JNA native binding lifecycle
+
+`LinuxSpiDevice` binds libc with JNA **direct mapping** (`Native.register`), which allocates a
+native handle per mapped method. The [`Activator`](src/main/java/net/solarnetwork/node/hw/atm90e36/spi/Activator.java)
+calls `LinuxSpiDevice.unregisterNativeMethods()` on bundle stop so that binding class and its
+handles are freed promptly rather than lingering until GC across a reinstall. (If you drive
+`LinuxSpiDevice` from your own activator or DS component instead, drop the `Bundle-Activator`
+header and call `unregisterNativeMethods()` from your own stop path.)
+
+Multiple bundles binding libc is fine — `Native.register` is per-class, and JNA `dlopen`s
+libc once and shares it — **provided they all resolve `com.sun.jna` to a single JNA bundle**.
+Two JNA bundles means two `libjnidispatch` loads and an `UnsatisfiedLinkError`. The bundle's
+real floor is JNA 5.12 (`Memory` is `Closeable`), so `bnd.bnd` could widen
+`com.sun.jna;version="[5.17,6)"` to `[5.12,6)` to share with older consumers such as
+`io.helins:linux-common` (JNA 5.7 — would need bumping).
 
 ## SPI details
 

@@ -13,12 +13,16 @@ Automatic-Module-Name:       net.solarnetwork.node.hw.atm90e36
 Export-Package: \
 	net.solarnetwork.node.hw.atm90e36
 
+# Releases the JNA native mappings when the bundle stops.
+Bundle-Activator:            net.solarnetwork.node.hw.atm90e36.spi.Activator
+
 # JNA ships as an OSGi bundle exporting com.sun.jna; it must be installed in the
 # framework alongside this bundle, as must the JSpecify annotations bundle.
 # Everything else resolves from the JRE.
 Import-Package: \
 	com.sun.jna;version="[5.17,6)",\
 	org.jspecify.annotations;version="[1.0,2.0)",\
+	org.osgi.framework;version="[1.10,2)",\
 	*
 
 # Also runnable as a plain executable jar (java -jar) when JNA is on the classpath.

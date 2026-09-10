@@ -30,6 +30,9 @@ dependencies {
 	compileOnly 'org.jspecify:jspecify:1.0.0'
 	testCompileOnly 'org.jspecify:jspecify:1.0.0'
 
+	// OSGi framework API, only for the bundle Activator (provided by the framework)
+	compileOnly 'org.osgi:org.osgi.framework:1.10.0'
+
 	testImplementation 'org.junit.jupiter:junit-jupiter:5.10.2'
 	testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 }

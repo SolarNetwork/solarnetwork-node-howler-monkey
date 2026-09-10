@@ -168,6 +168,31 @@ public class LinuxSpiDevice implements SpiDevice {
 		this.multiTransfer = batch;
 	}
 
+	/**
+	 * Release the JNA direct-mapping trampolines bound to the private libc
+	 * binding.
+	 *
+	 * <p>
+	 * JNA's {@code Native.register} allocates a native handle per mapped method
+	 * and keeps the mapping in a {@code WeakHashMap} keyed by the binding class.
+	 * In a framework where this bundle may be stopped and reinstalled, call this
+	 * once from the bundle's stop path (see {@code Activator}) so that class and
+	 * its handles can be garbage-collected promptly rather than lingering. The
+	 * shared {@code NativeLibrary} for libc is <em>not</em> touched — other
+	 * bundles keep using it.
+	 * </p>
+	 *
+	 * <p>
+	 * A no-op if the binding was never used, and safe to call more than once. Do
+	 * not call it while a {@link LinuxSpiDevice} is still in use: the libc
+	 * methods become unlinked, and only a fresh class load (the next bundle
+	 * start) rebinds them.
+	 * </p>
+	 */
+	public static void unregisterNativeMethods() {
+		Native.unregister(C.class);
+	}
+
 	@Override
 	public synchronized void open(int mode, int maxSpeedHz, int bitsPerWord) {
 		if ( fd >= 0 ) {
