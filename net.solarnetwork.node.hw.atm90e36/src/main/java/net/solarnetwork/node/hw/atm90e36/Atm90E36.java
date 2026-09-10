@@ -39,13 +39,15 @@ import java.util.concurrent.locks.LockSupport;
  *
  * <p>
  * Instances are not safe for concurrent use; drive one from a single thread (as
- * {@code meter-tool} does).
+ * {@code meter-tool} does). {@link #close()} is the exception — it is safe to
+ * call from another thread, such as a shutdown hook, and is idempotent, so an
+ * {@code Atm90E36} works as a try-with-resources resource.
  * </p>
  *
  * @author matt
  * @version 1.0
  */
-public class Atm90E36 {
+public class Atm90E36 implements AutoCloseable {
 
 	// ========================================================================
 	// REGISTER DEFINITIONS
@@ -498,15 +500,17 @@ public class Atm90E36 {
 	 * @return the measurement snapshot
 	 */
 	public Measurements readMeasurements() {
-		SpiDevice.Batch batch = measurementBatch;
-		if ( batch == null ) {
-			batch = spi.batch(readFrames(MEASUREMENT_REGISTERS), BATCH_SETTLE_MICROS);
-			measurementBatch = batch;
-		}
-		int[] r = decodeReadResponses(batch.transfer());
+		int[] r = decodeReadResponses(measurementBatch().transfer());
 		return new Measurements(r[0] / 100.0, r[1] / 100.0, r[2] / 100.0, r[3] / 1000.0, r[4] / 1000.0,
 				r[5] / 1000.0, power(r[6], r[7]), power(r[8], r[9]), power(r[10], r[11]),
 				power(r[12], r[13]), signed16(r[14]) / 1000.0, r[15] / 100.0);
+	}
+
+	private synchronized SpiDevice.Batch measurementBatch() {
+		if ( measurementBatch == null ) {
+			measurementBatch = spi.batch(readFrames(MEASUREMENT_REGISTERS), BATCH_SETTLE_MICROS);
+		}
+		return measurementBatch;
 	}
 
 	// VOLTAGE
@@ -750,8 +754,13 @@ public class Atm90E36 {
 		return (sys0 & 0x8000) != 0 || (sys1 & 0x8000) != 0;
 	}
 
-	/** Release the batched-measurement buffers and close the underlying SPI device. */
-	public void close() {
+	/**
+	 * Release the batched-measurement buffers and close the underlying SPI
+	 * device. Idempotent, and safe to call from a thread other than the one
+	 * using this instance.
+	 */
+	@Override
+	public synchronized void close() {
 		SpiDevice.Batch batch = measurementBatch;
 		if ( batch != null ) {
 			measurementBatch = null;

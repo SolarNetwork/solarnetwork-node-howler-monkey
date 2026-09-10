@@ -21,6 +21,12 @@ The driver depends only on the `SpiDevice` interface, so it can be reused with a
 (see [`FakeSpiDevice`](src/test/java/net/solarnetwork/node/hw/atm90e36/test/FakeSpiDevice.java))
 or a different SPI stack later.
 
+`Atm90E36` (and `SpiDevice`) are `AutoCloseable`; `close()` is idempotent and safe to call from
+another thread. `MeterTool` drives one per mode as a try-with-resources resource, plus — in CSV
+mode — a shutdown hook, since a SIGINT halts the JVM without unwinding the stack. The driver
+itself registers no hooks; that is left to the application (a driver headed for an OSGi bundle
+should not touch `Runtime.addShutdownHook`).
+
 ## Build
 
 ```sh

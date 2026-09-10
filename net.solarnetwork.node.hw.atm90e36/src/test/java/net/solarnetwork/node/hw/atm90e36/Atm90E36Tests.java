@@ -158,6 +158,22 @@ class Atm90E36Tests {
 	}
 
 	@Test
+	void closeIsIdempotentAndTryWithResourcesFriendly() {
+		FakeSpiDevice fake = new FakeSpiDevice();
+		Atm90E36 outside;
+		try ( Atm90E36 eic = new Atm90E36(fake) ) {
+			outside = eic;
+			eic.readMeasurements();
+		} // closed here
+		assertFalse(fake.open, "closed on exit from try-with-resources");
+		assertEquals(1, fake.batchCloses);
+
+		// a second close (e.g. a shutdown hook racing normal exit) is harmless
+		outside.close();
+		assertEquals(1, fake.batchCloses, "batch not closed twice");
+	}
+
+	@Test
 	void lineVoltageScaling() {
 		FakeSpiDevice fake = new FakeSpiDevice();
 		fake.registers.put(UrmsA, 65427);

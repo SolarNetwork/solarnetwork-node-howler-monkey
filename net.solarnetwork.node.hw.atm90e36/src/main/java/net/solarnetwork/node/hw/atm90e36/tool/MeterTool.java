@@ -138,10 +138,8 @@ public final class MeterTool {
 		out.println(BAR);
 		out.println();
 
-		Atm90E36 eic = new Atm90E36(new LinuxSpiDevice(SPI_BUS, SPI_DEVICE), LINE_FREQ, PGA_GAIN,
-				VOLTAGE_GAIN, CURRENT_GAIN, CURRENT_GAIN, CURRENT_GAIN);
-
-		try {
+		try (Atm90E36 eic = new Atm90E36(new LinuxSpiDevice(SPI_BUS, SPI_DEVICE), LINE_FREQ, PGA_GAIN,
+				VOLTAGE_GAIN, CURRENT_GAIN, CURRENT_GAIN, CURRENT_GAIN)) {
 			out.println("Device initializing...");
 			sleep(2000);
 			eic.begin();
@@ -276,7 +274,6 @@ public final class MeterTool {
 			out.println("❌ Error: " + e.getMessage());
 			e.printStackTrace();
 		} finally {
-			eic.close();
 			out.println("Connection closed.");
 		}
 	}
@@ -286,47 +283,53 @@ public final class MeterTool {
 	// ========================================================================
 
 	/** Stream measurements to standard output as CSV, one row every 5 seconds. */
+	// the shutdown hook deliberately closes the try-with-resources 'eic'
+	@SuppressWarnings("try")
 	public static void runCsvMode() {
 		final PrintStream out = System.out;
-		final Atm90E36 eic = new Atm90E36(new LinuxSpiDevice(SPI_BUS, SPI_DEVICE), LINE_FREQ, PGA_GAIN,
-				VOLTAGE_GAIN, CURRENT_GAIN, CURRENT_GAIN, CURRENT_GAIN);
 		final AtomicBoolean running = new AtomicBoolean(true);
 
-		Thread shutdown = new Thread(() -> {
-			running.set(false);
-			eic.close();
-		}, "meter-tool-shutdown");
-		Runtime.getRuntime().addShutdownHook(shutdown);
+		try (Atm90E36 eic = new Atm90E36(new LinuxSpiDevice(SPI_BUS, SPI_DEVICE), LINE_FREQ, PGA_GAIN,
+				VOLTAGE_GAIN, CURRENT_GAIN, CURRENT_GAIN, CURRENT_GAIN)) {
 
-		try {
-			eic.begin();
-			sleep(2000);
+			// On SIGINT the JVM halts without unwinding the stack, so the
+			// try-with-resources close above would not run; close from a
+			// shutdown hook too (Atm90E36.close() is idempotent).
+			Thread shutdown = new Thread(() -> {
+				running.set(false);
+				eic.close();
+			}, "meter-tool-shutdown");
+			Runtime.getRuntime().addShutdownHook(shutdown);
 
-			out.println(CSV_HEADER);
-			out.flush();
+			try {
+				eic.begin();
+				sleep(2000);
 
-			while ( running.get() ) {
-				out.println(csvRow(eic, Instant.now()));
+				out.println(CSV_HEADER);
 				out.flush();
-				if ( out.checkError() ) {
-					// stdout closed (e.g. piped into `head`): stop quietly
-					return;
-				}
 
-				sleep(5000);
+				while ( running.get() ) {
+					out.println(csvRow(eic, Instant.now()));
+					out.flush();
+					if ( out.checkError() ) {
+						// stdout closed (e.g. piped into `head`): stop quietly
+						return;
+					}
+
+					sleep(5000);
+				}
+			} finally {
+				try {
+					Runtime.getRuntime().removeShutdownHook(shutdown);
+				} catch ( IllegalStateException alreadyShuttingDown ) {
+					// ignore
+				}
 			}
 		} catch ( InterruptedException e ) {
 			Thread.currentThread().interrupt();
 		} catch ( Exception e ) {
 			System.err.println("Error: " + e.getMessage());
 			e.printStackTrace();
-		} finally {
-			try {
-				Runtime.getRuntime().removeShutdownHook(shutdown);
-			} catch ( IllegalStateException alreadyShuttingDown ) {
-				// ignore
-			}
-			eic.close();
 		}
 	}
 
