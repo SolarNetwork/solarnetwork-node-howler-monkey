@@ -2,20 +2,7 @@
 
 "Howler Monkey" is a Raspberry Pi-based device with an integrated ATM90E36 energy meter chip.
 
-# `meter-tool` script
-
-The [meter-tool.py](./scripts/meter-tool.py) Python program is a CLI tool for reading and
-calibrating the ATM90E36 chip.
-
-There are two further ports of this tool with identical CLI input/output:
-
-- [meter-tool-2.py](./scripts/meter-tool-2.py) — uses the pure-Python `spidev2` package
-  instead of `spidev`, so no compiler is needed on the device.
-- [net.solarnetwork.node.hw.atm90e36](./net.solarnetwork.node.hw.atm90e36) — a Java 17 / OSGi
-  bundle that talks to the Linux SPI API via JNA. See its
-  [README](./net.solarnetwork.node.hw.atm90e36/README.md).
-
-## OS setup
+# OS setup
 
 SPI communication must be enabled in `/boot/firmware/config.txt` by adding a line with 
 `dtparam=spi=on`.
@@ -33,22 +20,24 @@ Reboot the device after making these changes:
 sudo reboot
 ```
 
+# `meter-tool` script
+
+The [meter-tool.py](./scripts/meter-tool.py) Python program is a CLI tool for reading and
+calibrating the ATM90E36 chip.
+
 ## Software setup
 
-The software requires the `spidev` Python package, which requires a working compiler on the device.
-Install the necessary compiler support and set up a Python virtual environment for the packages:
+The software requires the `spidev2` Python package. Set up a Python virtual environment for the
+packages:
 
 ```sh
-# install python + pip + venv support + spidev compile support
+# install python + pip + venv support + spidev2
 sudo apt install python3-pip python3-venv python3-dev
-
-# install build support (for spidev)
-sudo apt install build-essential libtool
 
 # setup venv
 python3 -m venv ~/python/venv/hm
 source ~/python/venv/hm/bin/activate
-pip3 install spidev
+pip3 install spidev2
 ```
 
 Copy the `meter-tool.py` script to the device. Make it executable:
