@@ -7,6 +7,14 @@
 The [meter-tool.py](./scripts/meter-tool.py) Python program is a CLI tool for reading and
 calibrating the ATM90E36 chip.
 
+There are two further ports of this tool with identical CLI input/output:
+
+- [meter-tool-2.py](./scripts/meter-tool-2.py) — uses the pure-Python `spidev2` package
+  instead of `spidev`, so no compiler is needed on the device.
+- [net.solarnetwork.node.hw.atm90e36](./net.solarnetwork.node.hw.atm90e36) — a Java 17 / OSGi
+  bundle that talks to the Linux SPI API via JNA. See its
+  [README](./net.solarnetwork.node.hw.atm90e36/README.md).
+
 ## OS setup
 
 SPI communication must be enabled in `/boot/firmware/config.txt` by adding a line with 
