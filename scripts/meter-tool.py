@@ -139,6 +139,39 @@ PAngleB = 0xFA
 PAngleC = 0xFB
 Temp = 0xFC
 
+# Register addresses by lower-case name, and names by address, for the --read option
+_REGISTERS = [
+    (name, value) for name, value in list(globals().items())
+    if isinstance(value, int) and name not in ('READ', 'WRITE')
+]
+REGISTERS_BY_NAME = {name.lower(): value for name, value in _REGISTERS}
+REGISTER_NAMES = {
+    value: '/'.join(n for n, v in _REGISTERS if v == value) for _, value in _REGISTERS
+}
+
+# The --read default: registers for diagnosing power readings. MMode0 bits
+# EnPA/EnPB/EnPC select the phases counted into PmeanT; a phase whose |P|+|Q|
+# is below PPhaseTh is counted as 0; UrmsA x IrmsA x PFmeanA cross-checks
+# PmeanA; EnStatus0 b14 (TPNoload) flags total power below PStartTh.
+DIAGNOSTIC_REGISTERS = (
+    'MMode0', 'PStartTh', 'PPhaseTh', 'UrmsA', 'IrmsA', 'PmeanT', 'PmeanTLSB',
+    'PmeanA', 'PmeanALSB', 'QmeanA', 'PFmeanA', 'EnStatus0',
+)
+
+# MMode0 (33H) metering method bits, datasheet 6.4.2. Defined after the register
+# maps above so they are not mistaken for register addresses.
+MMODE0_FREQ_60HZ = 1 << 12  # 0: 50 Hz
+MMODE0_3P3W = 1 << 8        # 0: 3-phase 4-wire
+MMODE0_CF2_VARH = 1 << 7    # CF2 pulses reactive energy
+MMODE0_EN_PA = 1 << 2       # EnPA/EnPB/EnPC: phase counted into the all-phase totals
+MMODE0_EN_PB = 1 << 1
+MMODE0_EN_PC = 1 << 0
+
+# Default metering method: 3-phase 4-wire at 50 Hz (as in New Zealand), CT
+# current sensors, all three phases counted into the totals. This is 0087H, the
+# app note's 3P4W 50 Hz value and also the chip's power-on value.
+DEFAULT_METERING_MODE = MMODE0_CF2_VARH | MMODE0_EN_PA | MMODE0_EN_PB | MMODE0_EN_PC
+
 
 # ============================================================================
 # ATM90E36 CLASS
@@ -153,7 +186,7 @@ class ATM90E36:
     package, which needs no native compilation, instead of ``spidev``.
     """
 
-    def __init__(self, spi_bus=0, spi_device=0, line_freq=500, pga_gain=21,
+    def __init__(self, spi_bus=0, spi_device=0, metering_mode=DEFAULT_METERING_MODE, pga_gain=21,
                  voltage_gain=50000, current_gain_a=32498,
                  current_gain_b=32498, current_gain_c=32498):
         """Initialize ATM90E36 energy monitor"""
@@ -161,15 +194,15 @@ class ATM90E36:
         self.spi_bus = spi_bus
         self.spi_device = spi_device
 
-        self.line_freq = line_freq
+        self.metering_mode = metering_mode
         self.pga_gain = pga_gain
         self.voltage_gain = voltage_gain
         self.current_gain_a = current_gain_a
         self.current_gain_b = current_gain_b
         self.current_gain_c = current_gain_c
 
-    def begin(self):
-        """Initialize SPI communication and configure ATM90E36"""
+    def open(self):
+        """Open the SPI bus, without writing any register"""
         self.spi = spidev2.SPIBus(
             f'/dev/spidev{self.spi_bus}.{self.spi_device}',
             'w+b',
@@ -178,8 +211,13 @@ class ATM90E36:
             spi_mode=spidev2.SPIMode32.SPI_MODE_3,
         )
 
-        # Determine voltage sag threshold
-        if self.line_freq == 4485 or self.line_freq == 5231:
+    def begin(self):
+        """Initialize SPI communication and configure ATM90E36"""
+        self.open()
+
+        # Determine voltage sag threshold from the line frequency: 90V nominal
+        # for 60 Hz mains, 190V for 50 Hz
+        if self.metering_mode & MMODE0_FREQ_60HZ:
             sag_v = 90
         else:
             sag_v = 190
@@ -201,7 +239,7 @@ class ATM90E36:
         checksum = self.write_and_get_checksum(WRITE, ConfigStart, 0x5678, checksum)
         checksum = self.write_and_get_checksum(WRITE, PLconstH, 0x0861, checksum)
         checksum = self.write_and_get_checksum(WRITE, PLconstL, 0xC468, checksum)
-        checksum = self.write_and_get_checksum(WRITE, MMode0, self.line_freq, checksum)
+        checksum = self.write_and_get_checksum(WRITE, MMode0, self.metering_mode, checksum)
         checksum = self.write_and_get_checksum(WRITE, MMode1, self.pga_gain, checksum)
         checksum = self.write_and_get_checksum(WRITE, PStartTh, 0x1D4C, checksum)
         checksum = self.write_and_get_checksum(WRITE, QStartTh, 0x1D4C, checksum)
@@ -269,16 +307,15 @@ class ATM90E36:
         return list(rx_buf)
 
     def comm_energy_ic(self, rw, address, val):
-        """SPI communication with ATM90E36"""
-        output = ((val >> 8) & 0xFF) | ((val << 8) & 0xFF00)
-        val = output & 0xFFFF
+        """SPI communication with ATM90E36.
 
-        address |= (rw << 15)
-        address = ((address >> 8) & 0xFF) | ((address << 8) & 0xFF00)
-        address = address & 0xFFFF
-
-        addr_msb = (address >> 8) & 0xFF
-        addr_lsb = address & 0xFF
+        Per datasheet 4.2.1 each transaction is 32 SCLK cycles, MSB first: the
+        access type bit (1 = read, 0 = write), a 15-bit register address (only
+        the lower 10 bits are decoded), then 16 bits of data.
+        """
+        command = (rw << 15) | (address & 0x7FFF)
+        addr_msb = (command >> 8) & 0xFF
+        addr_lsb = command & 0xFF
         val_msb = (val >> 8) & 0xFF
         val_lsb = val & 0xFF
 
@@ -294,8 +331,7 @@ class ATM90E36:
             result = 0
 
         time.sleep(0.00001)
-        output = ((result >> 8) & 0xFF) | ((result << 8) & 0xFF00)
-        return output & 0xFFFF
+        return result
 
     def write_and_get_checksum(self, rw, address, val, checksum):
         """Write to register and update checksum"""
@@ -303,6 +339,35 @@ class ATM90E36:
         if address != CSZero and address != CSOne and address != CSTwo and address != CSThree:
             checksum ^= val
         return checksum & 0xFFFF
+
+    def read_register(self, address):
+        """Read a raw 16-bit register value"""
+        return self.comm_energy_ic(READ, address, 0xFFFF)
+
+    def is_configured(self):
+        """Check if the chip has been configured since it last reset.
+
+        ConfigStart reads 6886H at power-on, and 5678H or 8765H once configured.
+        """
+        return self.read_register(ConfigStart) in (0x5678, 0x8765)
+
+    # Watts (var, VA) per count of a phase / total power register, datasheet Table-11
+    PHASE_POWER_WEIGHT = 1.0
+    TOTAL_POWER_WEIGHT = 4.0
+
+    def _read_power(self, msb_reg, lsb_reg, weight):
+        """Read a signed MSB + LSB power register pair, scaled to W / var / VA.
+
+        The MSB register is two's complement, with 1 LSB worth ``weight``. Only
+        the upper 8 bits of the LSB register are valid, each worth
+        ``weight / 256``, so together the pair is a 32-bit fixed-point value with
+        16 fractional bits.
+        """
+        val = self.read_register(msb_reg)
+        val_lsb = self.read_register(lsb_reg)
+        if val & 0x8000:
+            val = -((~val & 0xFFFF) + 1)
+        return (val * 65536 + val_lsb) / 65536 * weight
 
     # VOLTAGE
     def get_line_voltage_a(self):
@@ -329,82 +394,42 @@ class ATM90E36:
 
     # ACTIVE POWER
     def get_active_power_a(self):
-        val = self.comm_energy_ic(READ, PmeanA, 0xFFFF)
-        val_lsb = self.comm_energy_ic(READ, PmeanALSB, 0xFFFF)
-        if val & 0x8000:
-            val = -((~val & 0xFFFF) + 1)
-        return (val * 65536 + val_lsb) * 0.00032
+        return self._read_power(PmeanA, PmeanALSB, self.PHASE_POWER_WEIGHT)
 
     def get_active_power_b(self):
-        val = self.comm_energy_ic(READ, PmeanB, 0xFFFF)
-        val_lsb = self.comm_energy_ic(READ, PmeanBLSB, 0xFFFF)
-        if val & 0x8000:
-            val = -((~val & 0xFFFF) + 1)
-        return (val * 65536 + val_lsb) * 0.00032
+        return self._read_power(PmeanB, PmeanBLSB, self.PHASE_POWER_WEIGHT)
 
     def get_active_power_c(self):
-        val = self.comm_energy_ic(READ, PmeanC, 0xFFFF)
-        val_lsb = self.comm_energy_ic(READ, PmeanCLSB, 0xFFFF)
-        if val & 0x8000:
-            val = -((~val & 0xFFFF) + 1)
-        return (val * 65536 + val_lsb) * 0.00032
+        return self._read_power(PmeanC, PmeanCLSB, self.PHASE_POWER_WEIGHT)
 
     def get_total_active_power(self):
-        val = self.comm_energy_ic(READ, PmeanT, 0xFFFF)
-        val_lsb = self.comm_energy_ic(READ, PmeanTLSB, 0xFFFF)
-        if val & 0x8000:
-            val = -((~val & 0xFFFF) + 1)
-        return (val * 65536 + val_lsb) * 0.00032
+        return self._read_power(PmeanT, PmeanTLSB, self.TOTAL_POWER_WEIGHT)
 
     # REACTIVE POWER
     def get_reactive_power_a(self):
-        val = self.comm_energy_ic(READ, QmeanA, 0xFFFF)
-        val_lsb = self.comm_energy_ic(READ, QmeanALSB, 0xFFFF)
-        if val & 0x8000:
-            val = -((~val & 0xFFFF) + 1)
-        return (val * 65536 + val_lsb) * 0.00032
+        return self._read_power(QmeanA, QmeanALSB, self.PHASE_POWER_WEIGHT)
 
     def get_reactive_power_b(self):
-        val = self.comm_energy_ic(READ, QmeanB, 0xFFFF)
-        val_lsb = self.comm_energy_ic(READ, QmeanBLSB, 0xFFFF)
-        if val & 0x8000:
-            val = -((~val & 0xFFFF) + 1)
-        return (val * 65536 + val_lsb) * 0.00032
+        return self._read_power(QmeanB, QmeanBLSB, self.PHASE_POWER_WEIGHT)
 
     def get_reactive_power_c(self):
-        val = self.comm_energy_ic(READ, QmeanC, 0xFFFF)
-        val_lsb = self.comm_energy_ic(READ, QmeanCLSB, 0xFFFF)
-        if val & 0x8000:
-            val = -((~val & 0xFFFF) + 1)
-        return (val * 65536 + val_lsb) * 0.00032
+        return self._read_power(QmeanC, QmeanCLSB, self.PHASE_POWER_WEIGHT)
 
     def get_total_reactive_power(self):
-        val = self.comm_energy_ic(READ, QmeanT, 0xFFFF)
-        val_lsb = self.comm_energy_ic(READ, QmeanTLSB, 0xFFFF)
-        if val & 0x8000:
-            val = -((~val & 0xFFFF) + 1)
-        return (val * 65536 + val_lsb) * 0.00032
+        return self._read_power(QmeanT, QmeanTLSB, self.TOTAL_POWER_WEIGHT)
 
-    # APPARENT POWER
+    # APPARENT POWER (the MSB is always 0, so signed decoding is harmless)
     def get_apparent_power_a(self):
-        val = self.comm_energy_ic(READ, SmeanA, 0xFFFF)
-        val_lsb = self.comm_energy_ic(READ, SmeanALSB, 0xFFFF)
-        return (val * 65536 + val_lsb) * 0.00032
+        return self._read_power(SmeanA, SmeanALSB, self.PHASE_POWER_WEIGHT)
 
     def get_apparent_power_b(self):
-        val = self.comm_energy_ic(READ, SmeanB, 0xFFFF)
-        val_lsb = self.comm_energy_ic(READ, SmeanBLSB, 0xFFFF)
-        return (val * 65536 + val_lsb) * 0.00032
+        return self._read_power(SmeanB, SmeanBLSB, self.PHASE_POWER_WEIGHT)
 
     def get_apparent_power_c(self):
-        val = self.comm_energy_ic(READ, SmeanC, 0xFFFF)
-        val_lsb = self.comm_energy_ic(READ, SmeanCLSB, 0xFFFF)
-        return (val * 65536 + val_lsb) * 0.00032
+        return self._read_power(SmeanC, SmeanCLSB, self.PHASE_POWER_WEIGHT)
 
     def get_total_apparent_power(self):
-        val = self.comm_energy_ic(READ, SmeanT, 0xFFFF)
-        val_lsb = self.comm_energy_ic(READ, SAmeanTLSB, 0xFFFF)
-        return (val * 65536 + val_lsb) * 0.00032
+        return self._read_power(SmeanT, SAmeanTLSB, self.TOTAL_POWER_WEIGHT)
 
     # FREQUENCY
     def get_frequency(self):
@@ -513,7 +538,6 @@ def run_calibration_mode():
     print("=" * 60)
     print()
 
-    LINE_FREQ = 500
     PGA_GAIN = 21
     VOLTAGE_GAIN = 50000
     CURRENT_GAIN = 32498
@@ -521,7 +545,6 @@ def run_calibration_mode():
     eic = ATM90E36(
         spi_bus=0,
         spi_device=0,
-        line_freq=LINE_FREQ,
         pga_gain=PGA_GAIN,
         voltage_gain=VOLTAGE_GAIN,
         current_gain_a=CURRENT_GAIN,
@@ -534,6 +557,8 @@ def run_calibration_mode():
         time.sleep(2)
         eic.begin()
         time.sleep(1)
+        print(f"Configured: MMode0=0x{eic.read_register(MMode0):04X} "
+              f"(expected 0x{eic.metering_mode:04X})")
 
         while True:
             print("\n" + "=" * 60)
@@ -625,7 +650,7 @@ def run_calibration_mode():
                 print(f"Current Gain A: {eic.current_gain_a}")
                 print(f"Current Gain B: {eic.current_gain_b}")
                 print(f"Current Gain C: {eic.current_gain_c}")
-                print(f"Line Frequency: {eic.line_freq}")
+                print(f"Metering Mode (MMode0): 0x{eic.metering_mode:04X}")
                 print(f"PGA Gain: {eic.pga_gain}")
             else:
                 print("❌ Invalid selection!")
@@ -649,20 +674,16 @@ def run_calibration_mode():
 # ============================================================================
 
 def run_csv_mode():
-    """CSV data logger"""
-    eic = ATM90E36(
-        spi_bus=0,
-        spi_device=0,
-        line_freq=500,
-        voltage_gain=50000,
-        current_gain_a=32498,
-        current_gain_b=32498,
-        current_gain_c=32498
-    )
+    """CSV data logger, which only reads from the chip"""
+    eic = ATM90E36(spi_bus=0, spi_device=0)
 
     try:
-        eic.begin()
-        time.sleep(2)
+        # the chip keeps its configuration until it loses power, so use
+        # --mode calibrate to configure it
+        eic.open()
+        if not eic.is_configured():
+            print("Warning: ATM90E36 not configured since power-on; "
+                  "run --mode calibrate to configure it", file=sys.stderr)
         fieldnames = [
             'Timestamp', 'Voltage_A', 'Voltage_B', 'Voltage_C',
             'Current_A', 'Current_B', 'Current_C',
@@ -715,6 +736,43 @@ def run_csv_mode():
 
 
 # ============================================================================
+# REGISTER READ
+# ============================================================================
+
+def parse_register(value):
+    """Parse a register address given as a name (PmeanT), hex (0xB0) or decimal (176)"""
+    address = REGISTERS_BY_NAME.get(value.lower())
+    if address is None:
+        try:
+            address = int(value, 0)
+        except ValueError:
+            raise argparse.ArgumentTypeError(
+                f"not a register name or number: {value}") from None
+    if not 0 <= address <= 0x7FFF:
+        raise argparse.ArgumentTypeError(f"register address out of range: {value}")
+    return address
+
+
+def register_label(address):
+    """Format a register address with its name, if known, like 0x00B0 (PmeanT)"""
+    name = REGISTER_NAMES.get(address)
+    return f"0x{address:04X} ({name})" if name else f"0x{address:04X}"
+
+
+def run_read_mode(registers):
+    """Print raw register values, without configuring the chip"""
+    labels = [register_label(address) for address in registers]
+    width = max(len(label) for label in labels)
+    eic = ATM90E36(spi_bus=0, spi_device=0)
+    try:
+        eic.open()
+        for address, label in zip(registers, labels):
+            print(f"{label:<{width}}: 0x{eic.read_register(address):04X}")
+    finally:
+        eic.close()
+
+
+# ============================================================================
 # MAIN
 # ============================================================================
 
@@ -732,9 +790,22 @@ def main():
         help='Working mode (default: csv)'
     )
 
+    parser.add_argument(
+        '--read',
+        nargs='*',
+        type=parse_register,
+        metavar='REG',
+        help='Print raw register values as "0xADDR (Name): 0xVALUE" lines and exit, '
+             'without configuring the chip. Each REG is a register name '
+             '(e.g. PmeanT), hex (0xB0) or decimal (176). With no REG, reads '
+             'the power diagnostic registers: ' + ' '.join(DIAGNOSTIC_REGISTERS)
+    )
+
     args = parser.parse_args()
 
-    if args.mode == 'calibrate':
+    if args.read is not None:
+        run_read_mode(args.read or [REGISTERS_BY_NAME[n.lower()] for n in DIAGNOSTIC_REGISTERS])
+    elif args.mode == 'calibrate':
         run_calibration_mode()
     elif args.mode == 'csv':
         run_csv_mode()
