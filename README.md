@@ -20,6 +20,13 @@ Reboot the device after making these changes:
 sudo reboot
 ```
 
+
+# SolarNode plugins
+
+The `net.solarnetwork.node.hw.atm90e36` and `net.solarnetwork.node.datum.atm90e36` directories
+contains SolarNode plugin projects that enable capturing data from the ATM90E36 chip.
+
+
 # `meter-tool` script
 
 The [meter-tool.py](./scripts/meter-tool.py) Python program is a CLI tool for reading and
