@@ -304,11 +304,11 @@ public class Atm90e36DatumDataSource extends DatumDataSourceSupport implements D
 		// energy; the per-phase registers are always populated, so the same
 		// summed-phases contract decides which of them are meaningful
 		final Atm90E36.EnergyReading energy = dataAndConfig.data().energy();
-		populateEnergy(ops, "activeEnergyImport", energy.activeImport(), phases);
-		populateEnergy(ops, "activeEnergyExport", energy.activeExport(), phases);
-		populateEnergy(ops, "reactiveEnergyImport", energy.reactiveImport(), phases);
-		populateEnergy(ops, "reactiveEnergyExport", energy.reactiveExport(), phases);
-		populateEnergy(ops, "apparentEnergy", energy.apparent(), phases);
+		populateEnergy(ops, "activeEnergyDeltaImport", energy.activeImport(), phases);
+		populateEnergy(ops, "activeEnergyDeltaExport", energy.activeExport(), phases);
+		populateEnergy(ops, "reactiveEnergyDeltaImport", energy.reactiveImport(), phases);
+		populateEnergy(ops, "reactiveEnergyDeltaExport", energy.reactiveExport(), phases);
+		populateEnergy(ops, "apparentEnergyDelta", energy.apparent(), phases);
 	}
 
 	/**
