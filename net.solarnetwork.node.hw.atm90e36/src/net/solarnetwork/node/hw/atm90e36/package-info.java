@@ -26,10 +26,11 @@
  *
  * <p>
  * {@link net.solarnetwork.node.hw.atm90e36.Atm90E36} is the register-level
- * driver; it communicates through a
- * {@link net.solarnetwork.node.hw.atm90e36.SpiDevice}, whose Linux
- * {@code spidev} implementation (via JNA) lives in the bundle-private
- * {@code net.solarnetwork.node.hw.atm90e36.spi} package.
+ * driver, with its registers defined by
+ * {@link net.solarnetwork.node.hw.atm90e36.Atm90E36Register}; it communicates
+ * through a {@link net.solarnetwork.node.hw.linux.spi.SpiDevice}, provided
+ * with its Linux {@code spidev} implementation by the
+ * {@code net.solarnetwork.node.hw.linux.spi} bundle.
  * </p>
  */
 

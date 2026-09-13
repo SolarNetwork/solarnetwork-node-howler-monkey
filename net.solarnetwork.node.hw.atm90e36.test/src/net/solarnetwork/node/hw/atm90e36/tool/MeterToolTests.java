@@ -25,6 +25,7 @@ package net.solarnetwork.node.hw.atm90e36.tool;
 import static org.assertj.core.api.BDDAssertions.then;
 import static org.assertj.core.api.BDDAssertions.thenThrownBy;
 import java.time.Instant;
+import java.util.List;
 import java.util.Map;
 import org.junit.Test;
 import net.solarnetwork.node.hw.atm90e36.Atm90E36;
@@ -51,11 +52,14 @@ public class MeterToolTests {
 	}
 
 	@Test
-	public void meterConfigDefaultsPreserveThePortedRegisterValues() {
+	public void meterConfigDefaultsAreThreePhaseFourWireAllPhases() {
 		Atm90E36Config config = MeterTool.meterConfig(Map.of());
 
-		// 0x01F4 (500) as ported, less its reserved bit 5
-		then(config.meteringMode()).as("MMode0").isEqualTo(0x01D4);
+		then(config.getWiring()).as("wiring").isEqualTo(Wiring.THREE_PHASE_FOUR_WIRE);
+		then(config.getLineFrequency()).as("line frequency").isEqualTo(LineFrequency.HZ_50);
+		then(config.getSummedPhases()).as("all phases summed").containsExactly(Phase.A, Phase.B,
+				Phase.C);
+		then(config.meteringMode()).as("MMode0, the app note's 3P4W 50Hz value").isEqualTo(0x0087);
 		then(config.pgaGainMode()).as("MMode1").isEqualTo(21);
 		then(config.getVoltageGain()).as("voltage gain").isEqualTo(50000);
 		then(config.getCurrentGainA()).as("current gain A").isEqualTo(32498);
@@ -91,7 +95,55 @@ public class MeterToolTests {
 
 		then(config.getWiring()).isEqualTo(Wiring.THREE_PHASE_FOUR_WIRE);
 		then(config.getSummedPhases()).containsExactly(Phase.A, Phase.B, Phase.C);
-		then(config.meteringMode()).as("MMode0 b8 clear, b12 set, all EnP bits set").isEqualTo(0x10D7);
+		then(config.meteringMode()).as("MMode0 b8 clear, b12 set, all EnP bits set").isEqualTo(0x1087);
+	}
+
+	@Test
+	public void parseArgsReadTakesZeroOrMoreRegisters() {
+		then(MeterTool.parseArgs(new String[] { "--read" })).as("no registers").containsEntry("read",
+				"");
+		then(MeterTool.parseArgs(new String[] { "--read", "MMode0", "0xB0", "--mode", "csv" }))
+				.as("registers up to the next option").containsEntry("read", "MMode0,0xB0")
+				.containsEntry("mode", "csv");
+		then(MeterTool.parseArgs(new String[] { "--read=MMode0,176" })).as("inline registers")
+				.containsEntry("read", "MMode0,176");
+	}
+
+	@Test
+	public void parseRegistersAcceptsNamesAndNumbers() {
+		then(MeterTool.parseRegisters("pmeant, 0xB1 177,0XC0")).containsExactly(0xB0, 0xB1, 0xB1, 0xC0);
+	}
+
+	@Test
+	public void parseRegistersDefaultsToTheDiagnosticSet() {
+		then(MeterTool.parseRegisters("")).containsExactly(0x33, 0x35, 0x38, 0xD9, 0xDD, 0xB0, 0xC0,
+				0xB1, 0xC1, 0xB5, 0xBD, 0x95);
+	}
+
+	@Test
+	public void parseRegistersRejectsUnknownAndOutOfRange() {
+		thenThrownBy(() -> MeterTool.parseRegisters("bogus"))
+				.isInstanceOf(IllegalArgumentException.class).hasMessageContaining("bogus");
+		thenThrownBy(() -> MeterTool.parseRegisters("0x8000"))
+				.isInstanceOf(IllegalArgumentException.class).hasMessageContaining("out of range");
+	}
+
+	@Test
+	public void registerLinesAlignValuesAndOnlyRead() {
+		// GIVEN
+		FakeSpiDevice fake = new FakeSpiDevice();
+		fake.registers.put(0x33, 0x0087);
+		fake.registers.put(0xC0, 0x1400);
+
+		// WHEN
+		List<String> lines = MeterTool.registerLines(new Atm90E36(fake), List.of(0x33, 0xC0, 0x180));
+
+		// THEN
+		then(lines).as("labels padded to the widest, with unknown addresses unnamed").containsExactly(
+				"0x0033 (MMode0)   : 0x0087", //
+				"0x00C0 (PmeanTLSB): 0x1400", //
+				"0x0180            : 0x0000");
+		then(fake.writes).as("reading registers writes nothing").isEmpty();
 	}
 
 	@Test
@@ -120,9 +172,9 @@ public class MeterToolTests {
 		FakeSpiDevice fake = new FakeSpiDevice();
 		fake.registers.put(0xD9, 65427); // UrmsA  -> 654.27
 		fake.registers.put(0xDD, 65427); // IrmsA  -> 65.427
-		fake.registers.put(0xB1, 5); // PmeanA  -> 104.8576
+		fake.registers.put(0xB1, 5); // PmeanA  -> 5 W
 		fake.registers.put(0xC1, 0); // PmeanA LSB
-		fake.registers.put(0xB0, 5); // PmeanT  -> 104.8576
+		fake.registers.put(0xB0, 5); // PmeanT  -> 5 * 4 W = 20 W
 		fake.registers.put(0xC0, 0); // PmeanT LSB
 		fake.registers.put(0xBC, 0x03E8); // PFmeanT -> 1.000
 		fake.registers.put(0xF8, 6001); // Freq -> 60.01
@@ -134,7 +186,7 @@ public class MeterToolTests {
 
 		// THEN
 		then(row).isEqualTo("2026-09-10T12:34:56Z,654.27,0.00,0.00,65.427,0.000,0.000,"
-				+ "104.86,0.00,0.00,104.86,1.000,60.01");
+				+ "5.00,0.00,0.00,20.00,1.000,60.01");
 	}
 
 }

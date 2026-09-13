@@ -24,6 +24,7 @@ package net.solarnetwork.node.hw.atm90e36;
 
 import static org.assertj.core.api.BDDAssertions.then;
 import static org.assertj.core.api.BDDAssertions.within;
+import java.util.Arrays;
 import java.util.EnumSet;
 import org.junit.Test;
 import net.solarnetwork.node.hw.atm90e36.Atm90E36Config.LineFrequency;
@@ -50,6 +51,8 @@ public class Atm90E36Tests {
 	private static final int IrmsA = 0xDD;
 	private static final int PmeanA = 0xB1;
 	private static final int PmeanALSB = 0xC1;
+	private static final int PmeanT = 0xB0;
+	private static final int PmeanTLSB = 0xC0;
 	private static final int PFmeanT = 0xBC;
 	private static final int Freq = 0xF8;
 	private static final int MMode0 = 0x33;
@@ -66,7 +69,7 @@ public class Atm90E36Tests {
 	private static final int SAG_TH_60HZ = 4170; //  90V nominal
 
 	@Test
-	public void readFramingMatchesSpidevWireFormat() {
+	public void readFramingIsMsbFirst() {
 		// GIVEN
 		FakeSpiDevice fake = new FakeSpiDevice();
 		fake.registers.put(Freq, 5000);
@@ -77,10 +80,8 @@ public class Atm90E36Tests {
 
 		// THEN
 		then(f).as("Freq register scaled to Hz").isCloseTo(50.0, within(TOLERANCE));
-		then(fake.txFrames.get(0))
-				.as("address 0xF8 | read-bit 0x8000 -> 0x80F8, byte-swapped to 0xF880");
-		then(fake.txFrames.get(0)).as("address 0xF8 | read-bit 0x8000 -> 0x80F8, byte-swapped to 0xF880")
-				.containsExactly(0xF8, 0x80, 0x00, 0x00);
+		then(fake.txFrames.get(0)).as("read bit 0x8000 | address 0xF8 -> 0x80F8, MSB first")
+				.containsExactly(0x80, 0xF8, 0x00, 0x00);
 	}
 
 	@Test
@@ -94,8 +95,8 @@ public class Atm90E36Tests {
 
 		// THEN
 		then(value).as("register value decoded from the response frame").isEqualTo(0xABCD);
-		then(fake.txFrames.get(0)).as("address 0x42 | 0x8000 -> 0x8042, byte-swapped to 0x4280")
-				.containsExactly(0x42, 0x80, 0x00, 0x00);
+		then(fake.txFrames.get(0)).as("read bit 0x8000 | address 0x42 -> 0x8042, MSB first")
+				.containsExactly(0x80, 0x42, 0x00, 0x00);
 	}
 
 	@Test
@@ -104,15 +105,27 @@ public class Atm90E36Tests {
 		FakeSpiDevice fake = new FakeSpiDevice();
 
 		// WHEN
-		new Atm90E36(fake).writeRegister(0x33, 0x01F4); // MMode0 <- 500
+		new Atm90E36(fake).writeRegister(0x33, 0x1234);
 
 		// THEN
-		then(fake.txFrames.get(0))
-				.as("address 0x33 -> byte-swapped 0x3300; value 0x01F4 -> byte-swapped 0xF401")
-				.containsExactly(0x33, 0x00, 0xF4, 0x01);
+		then(fake.txFrames.get(0)).as("write bit clear | address 0x33, then value 0x1234, MSB first")
+				.containsExactly(0x00, 0x33, 0x12, 0x34);
 		then(fake.writes).as("single register write recorded").hasSize(1);
 		then(fake.writes.get(0).address).as("write address").isEqualTo(0x33);
-		then(fake.writes.get(0).value).as("write value").isEqualTo(0x01F4);
+		then(fake.writes.get(0).value).as("write value").isEqualTo(0x1234);
+	}
+
+	@Test
+	public void registerLookups() {
+		then(Atm90E36Register.forName("pmeanTLSB")).as("name lookup ignores case")
+				.isSameAs(Atm90E36Register.PmeanTLSB);
+		then(Atm90E36Register.PmeanTLSB.getAddress()).as("address").isEqualTo(0xC0);
+		then(Atm90E36Register.forName("nope")).as("unknown name").isNull();
+		then(Atm90E36Register.forAddress(0x33)).as("address lookup").isSameAs(Atm90E36Register.MMode0);
+		then(Atm90E36Register.forAddress(0x180)).as("unknown address").isNull();
+		then(Arrays.stream(Atm90E36Register.values()).map(Atm90E36Register::getAddress).toList())
+				.as("unique register addresses").doesNotHaveDuplicates()
+				.allMatch(address -> address >= 0x00 && address <= 0xFF);
 	}
 
 	@Test
@@ -122,9 +135,9 @@ public class Atm90E36Tests {
 		fake.registers.put(0xD9, 65427); // UrmsA -> 654.27 V
 		fake.registers.put(0xDA, 24000); // UrmsB -> 240.00 V
 		fake.registers.put(0xDD, 1500); //  IrmsA -> 1.500 A
-		fake.registers.put(0xB1, 3); //     PmeanA -> (3*65536)*0.00032 = 62.91456 W
-		fake.registers.put(0xC1, 0); //     PmeanA LSB
-		fake.registers.put(0xB0, 0xFFFF); // PmeanT -> -1 -> -20.97152 W
+		fake.registers.put(0xB1, 3); //     PmeanA -> 3 W
+		fake.registers.put(0xC1, 0x8000); // PmeanA LSB -> +128/256 W = 3.5 W
+		fake.registers.put(0xB0, 0xFFFF); // PmeanT -> -1 * 4 W
 		fake.registers.put(0xC0, 0); //     PmeanT LSB
 		fake.registers.put(0xBC, 0xFC18); // PFmeanT -> -1000 -> -1.0
 		fake.registers.put(0xF8, 6000); //  Freq -> 60.00 Hz
@@ -136,16 +149,43 @@ public class Atm90E36Tests {
 		then(fake.batchOpens).as("one batch handle").isEqualTo(1);
 		then(fake.batchTransfers).as("one transfer for the whole row").isEqualTo(1);
 		then(fake.txFrames).as("16 register reads in the batch").hasSize(16);
+		then(fake.txFrames.get(0)).as("first batched frame reads UrmsA, MSB first").containsExactly(0x80,
+				0xD9, 0x00, 0x00);
 		then(fake.lastSettleMicros).as("inter-access settle time").isEqualTo(10);
 
 		then(m.voltageA()).as("voltage A").isCloseTo(654.27, within(TOLERANCE));
 		then(m.voltageB()).as("voltage B").isCloseTo(240.00, within(TOLERANCE));
 		then(m.voltageC()).as("voltage C, unset register").isCloseTo(0.0, within(TOLERANCE));
 		then(m.currentA()).as("current A").isCloseTo(1.5, within(TOLERANCE));
-		then(m.powerA()).as("power A").isCloseTo(62.91456, within(TOLERANCE));
-		then(m.powerTotal()).as("negative total power").isCloseTo(-20.97152, within(TOLERANCE));
+		then(m.powerA()).as("power A").isCloseTo(3.5, within(TOLERANCE));
+		then(m.powerTotal()).as("negative total power").isCloseTo(-4.0, within(TOLERANCE));
 		then(m.powerFactorTotal()).as("negative total power factor").isCloseTo(-1.0, within(TOLERANCE));
 		then(m.frequency()).as("frequency").isCloseTo(60.0, within(TOLERANCE));
+	}
+
+	@Test
+	public void readMeasurementsDecodesAMeterSnapshot() {
+		// GIVEN register values read from a real meter with only phase A
+		// connected and all three phases summed (MMode0 0087H)
+		FakeSpiDevice fake = new FakeSpiDevice();
+		fake.registers.put(0xD9, 0x56CF); // UrmsA
+		fake.registers.put(0xDD, 0x017D); // IrmsA
+		fake.registers.put(0xB1, 0xFFCC); // PmeanA
+		fake.registers.put(0xC1, 0x5100); // PmeanALSB
+		fake.registers.put(0xB0, 0xFFF3); // PmeanT
+		fake.registers.put(0xC0, 0x1400); // PmeanTLSB
+		fake.registers.put(0xBC, 0xFD9D); // PFmeanT
+
+		// WHEN
+		Atm90E36.Measurements m = new Atm90E36(fake).readMeasurements();
+
+		// THEN
+		then(m.voltageA()).as("voltage A").isCloseTo(222.23, within(TOLERANCE));
+		then(m.currentA()).as("current A").isCloseTo(0.381, within(TOLERANCE));
+		then(m.powerA()).as("power A, -52 + 81/256 W").isCloseTo(-51.68359375, within(TOLERANCE));
+		then(m.powerTotal()).as("total power, (-13 + 20/256) x 4 W, the same as phase A")
+				.isCloseTo(-51.6875, within(TOLERANCE));
+		then(m.powerFactorTotal()).as("power factor").isCloseTo(-0.611, within(TOLERANCE));
 	}
 
 	@Test
@@ -240,8 +280,17 @@ public class Atm90E36Tests {
 		fake.registers.put(PmeanA, 5);
 		fake.registers.put(PmeanALSB, 0);
 
-		// (5 * 65536 + 0) * 0.00032
-		then(new Atm90E36(fake).getActivePowerA()).isCloseTo(104.8576, within(TOLERANCE));
+		// phase 1 LSB = 1 W
+		then(new Atm90E36(fake).getActivePowerA()).isCloseTo(5.0, within(TOLERANCE));
+	}
+
+	@Test
+	public void activePowerLsbFraction() {
+		FakeSpiDevice fake = new FakeSpiDevice();
+		fake.registers.put(PmeanA, 5);
+		fake.registers.put(PmeanALSB, 0x4000); // upper byte 0x40 = 64/256 W
+
+		then(new Atm90E36(fake).getActivePowerA()).isCloseTo(5.25, within(TOLERANCE));
 	}
 
 	@Test
@@ -250,7 +299,25 @@ public class Atm90E36Tests {
 		fake.registers.put(PmeanA, 0xFFFF); // -1
 		fake.registers.put(PmeanALSB, 0);
 
-		then(new Atm90E36(fake).getActivePowerA()).isCloseTo(-20.97152, within(TOLERANCE));
+		then(new Atm90E36(fake).getActivePowerA()).isCloseTo(-1.0, within(TOLERANCE));
+	}
+
+	@Test
+	public void activePowerNegativeWithLsbFraction() {
+		FakeSpiDevice fake = new FakeSpiDevice();
+		fake.registers.put(PmeanA, 0xFFFF);
+		fake.registers.put(PmeanALSB, 0x8000); // 0xFFFF8000 as 32-bit = -0.5 W
+
+		then(new Atm90E36(fake).getActivePowerA()).isCloseTo(-0.5, within(TOLERANCE));
+	}
+
+	@Test
+	public void totalActivePowerIsFourWattsPerLsb() {
+		FakeSpiDevice fake = new FakeSpiDevice();
+		fake.registers.put(PmeanT, 2);
+		fake.registers.put(PmeanTLSB, 0x8000); // 2.5 * 4 W
+
+		then(new Atm90E36(fake).getTotalActivePower()).isCloseTo(10.0, within(TOLERANCE));
 	}
 
 	@Test

@@ -1,166 +1,152 @@
 # ATM90E36 energy meter support (`net.solarnetwork.node.hw.atm90e36`)
 
-A Java 17 / OSGi port of [`scripts/meter-tool-2.py`](../scripts/meter-tool-2.py). It reads and
-calibrates the ATM90E36 energy metering IC over SPI, and ships the same `meter-tool` CLI
-(`--mode csv` / `--mode calibrate`) with byte-for-byte compatible input and output.
+A SolarNode OSGi bundle for reading and configuring the Atmel/Microchip ATM90E36 poly-phase
+energy metering IC over SPI. The
+[`net.solarnetwork.node.datum.atm90e36`](../net.solarnetwork.node.datum.atm90e36) plugin builds on
+it to capture datum.
 
-The Linux SPI transport is implemented with **JNA** (Java Native Access): `ioctl(2)` calls
-against `/dev/spidevX.Y`, transcribed from `linux/spi/spidev.h`. There is no JNI stub to
-compile — JNA itself is a pure-Java OSGi bundle — which is the Java analogue of swapping the
-Python `spidev` package for `spidev2`.
+## SPI protocol
+
+The chip is accessed in SPI mode 3 (CPOL=1, CPHA=1), 8 bits per word, at 200 kHz (the chip
+allows up to 1.2 MHz). Per datasheet §4.2.1 each transaction is 32 clocks, all MSB first: the
+access type bit (1 = read, 0 = write), a 15-bit register address of which the chip decodes only
+the lower 10 bits, then the 16-bit register value. For a read the chip drives the value on `SDO`
+during the last 16 clocks.
+
+Each transaction is framed by chip-select and accesses exactly one register (*"The SPI
+read/write transaction is CS-low defined. Each transaction can only access one register."*).
 
 ## Layout
 
 | Package | Visibility | Contents |
 |---|---|---|
-| `net.solarnetwork.node.hw.atm90e36` | exported | [`SpiDevice`](src/main/java/net/solarnetwork/node/hw/atm90e36/SpiDevice.java) abstraction, [`SpiException`](src/main/java/net/solarnetwork/node/hw/atm90e36/SpiException.java), and the [`Atm90E36`](src/main/java/net/solarnetwork/node/hw/atm90e36/Atm90E36.java) register-level driver (a direct port of the Python `ATM90E36` class) |
-| `net.solarnetwork.node.hw.atm90e36.spi` | bundle-private | [`LinuxSpiDevice`](src/main/java/net/solarnetwork/node/hw/atm90e36/spi/LinuxSpiDevice.java) — the JNA `spidev` implementation |
-| `net.solarnetwork.node.hw.atm90e36.tool` | bundle-private | [`MeterTool`](src/main/java/net/solarnetwork/node/hw/atm90e36/tool/MeterTool.java) — the CLI (`main`, plus `runCsvMode()` / `runCalibrationMode()`) |
+| `net.solarnetwork.node.hw.atm90e36` | exported | [`Atm90E36`](src/net/solarnetwork/node/hw/atm90e36/Atm90E36.java), the register-level driver; [`Atm90E36Config`](src/net/solarnetwork/node/hw/atm90e36/Atm90E36Config.java), its metering configuration; and [`Atm90E36Register`](src/net/solarnetwork/node/hw/atm90e36/Atm90E36Register.java), the register enumeration |
+| `net.solarnetwork.node.hw.atm90e36.tool` | bundle-private | [`MeterTool`](src/net/solarnetwork/node/hw/atm90e36/tool/MeterTool.java), a command-line tool for reading and calibrating the chip |
 
-The driver depends only on the `SpiDevice` interface, so it can be reused with a mock transport
-(see [`FakeSpiDevice`](src/test/java/net/solarnetwork/node/hw/atm90e36/test/FakeSpiDevice.java))
-or a different SPI stack later.
+The SPI transport comes from the `net.solarnetwork.node.hw.linux.spi` bundle: the `SpiDevice`
+interface, `SpiDeviceFactory.spiDeviceFor(bus, chipSelect)`, and the JNA (Java Native Access)
+`JnaSpiDevice` implementation, which issues `ioctl(2)` calls against `/dev/spidevX.Y`. The
+driver depends only on the `SpiDevice` interface, so the tests run it against an in-memory
+[`FakeSpiDevice`](../net.solarnetwork.node.hw.atm90e36.test/src/net/solarnetwork/node/hw/atm90e36/test/FakeSpiDevice.java).
 
-`Atm90E36` (and `SpiDevice`) are `AutoCloseable`; `close()` is idempotent and safe to call from
-another thread. `MeterTool` drives one per mode as a try-with-resources resource, plus — in CSV
-mode — a shutdown hook, since a SIGINT halts the JVM without unwinding the stack. The driver
-itself registers no hooks; that is left to the application (a driver headed for an OSGi bundle
-should not touch `Runtime.addShutdownHook`).
+`Atm90E36` is `AutoCloseable`; `close()` is idempotent and safe to call from another thread.
+The driver registers no shutdown hooks, leaving that to the application: `MeterTool` uses
+try-with-resources, plus a shutdown hook in CSV mode, since a SIGINT halts the JVM without
+unwinding the stack.
 
-## Build
+## Configuration
 
-```sh
-./gradlew build
-```
+The chip keeps its configuration in volatile registers, so a configuration survives a restart
+of SolarNode but not a power cycle of the chip. `Atm90E36` separates attaching to the chip from
+configuring it:
 
-Produces:
+- `open()` opens the SPI device without writing to the chip.
+- `isConfigured()` reports whether the chip has been configured since it powered up (its
+  `ConfigStart` register no longer holds the power-on `6886H`).
+- `configure(Atm90E36Config)` writes the configuration, calibration, harmonic and
+  measurement-adjustment register blocks. **It issues a software reset first, which clears the
+  accumulated energy registers.**
+- `configureIfNeeded(Atm90E36Config)` configures only when the chip is unconfigured or holds
+  different settings, per `matchesConfiguration(Atm90E36Config)`.
+- `refreshConfig()` reads the configuration back from the chip.
 
-- `build/libs/net.solarnetwork.node.hw.atm90e36-1.0.0.jar` — an OSGi bundle **and** an
-  executable jar (`Main-Class` set).
-- `build/distributions/meter-tool-1.0.0.{zip,tar}` — a standalone distribution with a launch
-  script and the JNA jar bundled (via the `application` plugin).
+A default `Atm90E36Config` matches the chip's power-on values: `MMode0` `0087H` (3-phase
+4-wire, 50 Hz, current transformers, all three phases counted into the all-phase totals) and
+`MMode1` `0000H` (1X PGA gain). The chip totals power and energy as
+`PT = PA*EnPA + PB*EnPB + PC*EnPC`, so `Atm90E36Config.setSummedPhases()` should name the phases
+that are actually connected.
 
-Java 17 is required (`toolchain { languageVersion = 17 }`); the build was verified with Gradle
-9.7.1 and the `biz.aQute.bnd.builder` 7.4.0 plugin.
+## Measurements
 
-### Nullability
+| Register | Scaling |
+|---|---|
+| `Urms[A-C]` | 1 LSB = 0.01 V |
+| `Irms[A-C]` | 1 LSB = 0.001 A |
+| `Pmean`, `Qmean`, `Smean` | two's complement `MSB` register, 1 LSB = 1 W (var, VA) per phase and 4 W for the total; only the upper 8 bits of the matching `LSB` register are valid, each worth 1/256 of that |
+| `PFmean` | signed, 1 LSB = 0.001 |
+| `Freq` | 1 LSB = 0.01 Hz |
+
+The energy registers are read-to-clear, so `readEnergy()` returns the energy accumulated since
+the previous read (or since `configure()`); callers accumulate it themselves.
+
+## MeterTool
+
+`MeterTool` is a command-line tool with three modes:
+
+- **CSV** (the default) prints a row of voltage, current, power, power factor and frequency
+  every 5 seconds. It only reads from the chip, and warns on standard error if the chip is not
+  configured.
+- **Calibrate** (`--mode calibrate`) configures the chip, then presents an interactive menu for
+  viewing measurements and working out voltage and current gains. By default it applies a
+  3-phase 4-wire, 50 Hz configuration with all three phases summed (`MMode0` `0087H`) and 2X
+  PGA gain on the phase current channels; options override each setting (see `--help`).
+- **Read** (`--read [REG ...]`) prints raw register values and exits, without configuring the
+  chip. Registers are given by name (as in `Atm90E36Register`, ignoring case), hex or decimal;
+  with none it prints those useful for diagnosing power readings:
+
+  ```
+  0x0033 (MMode0)   : 0x0087
+  0x0035 (PStartTh) : 0x1D4C
+  0x00B0 (PmeanT)   : 0xFFF3
+  0x00C0 (PmeanTLSB): 0x1400
+  ...
+  ```
+
+## Batched register reads
+
+Each CSV row needs 16 register reads. Rather than 16 separate `ioctl` calls,
+`Atm90E36.readMeasurements()` builds the 16 read frames once and submits them through
+`SpiDevice.batch(byte[][] txFrames, int settleMicros)`, which `JnaSpiDevice` issues as **one**
+`SPI_IOC_MESSAGE(16)` `ioctl`. `readEnergy()` batches the energy registers the same way.
+
+Because the chip accesses one register per chip-select cycle, the message is 16 discrete
+transfers with `cs_change = 1` on all but the last, so the kernel toggles chip-select between
+them, and a 10 µs settle delay after each. The datasheet only requires a minimum chip-select
+high time (`tCSH`) of `2T + 10 ns`, so the delay is conservative headroom.
+
+The returned `Batch` is reusable: its `transfer()` re-runs the same frames without
+re-allocating native buffers. `Atm90E36` creates its measurement and energy batches on first
+use and releases them in `close()`, so a polling loop allocates little more than the returned
+records. If a particular SPI controller or device-tree chip-select configuration mishandles
+`cs_change` within a message, `JnaSpiDevice.setMultiTransfer(false)` falls back to one `ioctl`
+per frame, with the same results. **The batched path has not yet been validated on hardware**;
+the unit tests exercise it only through `FakeSpiDevice`.
+
+## Nullability
 
 Every package is `@org.jspecify.annotations.NullMarked` (via `package-info.java`), matching
-recent SolarNode bundles such as `net.solarnetwork.node`. All fields and parameters are
-therefore non-null by contract — constructor-injected `SpiDevice` / device path, primitive
-measurement returns — so no `@Nullable` is used anywhere. `jspecify` is a `compileOnly`
-dependency; the annotations have no runtime effect, and the JVM ignores them when the jar is
-absent (standalone runs), while OSGi resolves the imported `org.jspecify.annotations` package.
+recent SolarNode bundles, so fields, parameters and return values are non-null unless annotated
+`@Nullable`, as for the lazily created SPI batches and the `Atm90E36Register.forAddress()` /
+`forName()` lookups.
 
-## Run as a standalone tool (like `meter-tool-2.py`)
+## Deployment
 
-```sh
-./gradlew installDist
-# copy build/install/meter-tool to the device, then:
-/opt/meter-tool/bin/meter-tool                 # CSV to stdout, one row / 5 s
-/opt/meter-tool/bin/meter-tool --mode calibrate # interactive calibration menu
-```
+The bundle imports:
 
-Or run straight from Gradle during development:
+- `net.solarnetwork.node.hw.linux.spi`, from the `net.solarnetwork.node.hw.linux-spi` bundle,
+  which in turn imports JNA (`com.sun.jna`)
+- `net.solarnetwork.domain` and `net.solarnetwork.util`, from `net.solarnetwork.common`
+- `org.jspecify.annotations` and `org.slf4j`
 
-```sh
-./gradlew run --args='--mode csv'
-```
+On the device:
 
-CSV output matches the Python tool. One cosmetic difference: the `Timestamp` column is an
-ISO-8601 instant with millisecond precision (`2026-09-10T12:34:56.789Z`) rather than the
-microsecond precision Python's `datetime` emits.
-
-## Deploy as an OSGi bundle (SolarNode / Equinox)
-
-This bundle imports two packages that the framework must provide:
-
-1. Install the **JNA bundle**: `net.java.dev.jna:jna:5.17.0` (exports
-   `com.sun.jna`); this bundle imports `com.sun.jna;version="[5.17,6)"`.
-2. Install the **JSpecify bundle**: `org.jspecify:jspecify:1.0.0` (exports
-   `org.jspecify.annotations`); imported as `org.jspecify.annotations;version="[1.0,2.0)"`.
-   SolarNode already ships this.
-3. Install this bundle.
-4. Invoke `MeterTool.runCsvMode()` / `runCalibrationMode()` from your own component, or wrap
-   them in a Gogo command:
-
-   ```java
-   @Component(property = { "osgi.command.scope=metertool",
-           "osgi.command.function=csv", "osgi.command.function=calibrate" })
-   public class MeterToolCommands {
-       public void csv() { MeterTool.runCsvMode(); }
-       public void calibrate() { MeterTool.runCalibrationMode(); }
-   }
-   ```
-
-### Runtime requirements on the device
-
-- The user running SolarNode must be able to open `/dev/spidev0.0` — add it to the `spi`
-  group (see the [top-level README](../README.md)).
-- JNA unpacks its native `libjnidispatch.so` to a temp directory and `dlopen`s it. If `/tmp`
-  is mounted `noexec`, point JNA elsewhere with `-Djna.tmpdir=/var/tmp/jna` (writable, exec)
-  or install the OS `libjna-java` / `libjnidispatch-java` package and set
+- The user running SolarNode must be able to open `/dev/spidev0.0`; see
+  [OS setup](../README.md#os-setup) for enabling SPI and adding the user to the `spi` group.
+- JNA unpacks its native `libjnidispatch.so` to a temporary directory and loads it from there.
+  If `/tmp` is mounted `noexec`, point JNA elsewhere with `-Djna.tmpdir=/var/tmp/jna` (writable,
+  exec), or install the OS `libjna-java` / `libjnidispatch-java` package and set
   `-Djna.nosys=false`.
-
-## SPI details
-
-`LinuxSpiDevice` opens the device `O_RDWR | O_CLOEXEC` and issues:
-
-| ioctl | value | purpose |
-|---|---|---|
-| `SPI_IOC_WR_MODE32` | `0x40046B05` | SPI mode 3 (CPOL=1, CPHA=1) |
-| `SPI_IOC_WR_BITS_PER_WORD` | `0x40016B03` | 8 |
-| `SPI_IOC_WR_MAX_SPEED_HZ` | `0x40046B04` | 200000 |
-| `SPI_IOC_MESSAGE(N)` | `_IOW('k',0,char[N*32])` | `N` full-duplex transfers in one call |
-
-Each `transfer(byte[])` maps to a single `spi_ioc_transfer` (32 bytes, `speed_hz = 0` so the
-bus default applies) — the same semantics as `spidev`'s `xfer2` and `spidev2`'s `transfer`.
-The ioctl request codes are verified against the header constants in
-[`LinuxSpiDeviceTests`](src/test/java/net/solarnetwork/node/hw/atm90e36/spi/LinuxSpiDeviceTests.java).
-
-### Batched register reads
-
-The CSV path is the primary use case, and each row needs 16 register reads. Rather than 16
-`ioctl` calls (each with its own JNA dispatch and `~10 µs` settle sleep),
-[`Atm90E36.readMeasurements()`](src/main/java/net/solarnetwork/node/hw/atm90e36/Atm90E36.java)
-builds all 16 read frames once and submits them as **one** `SPI_IOC_MESSAGE(16)` `ioctl`.
-
-The ATM90E36 SPI protocol accesses exactly one register per chip-select cycle (datasheet
-§4.2.1: *"The SPI read/write transaction is CS-low defined. Each transaction can only access
-one register."*), so the batch is 16 discrete transfers with `cs_change = 1` set on all but
-the last — the kernel toggles CS between them, and a `delay_usecs = 10` hold is applied after
-each. The datasheet's only inter-transaction requirement is `tCSH` (min CS-high) of `2T + 10 ns`,
-so the `10 µs` hold is conservative headroom, not a hard requirement; the max SCLK is 1.2 MHz
-(we use 200 kHz, matching the validated Python path).
-
-**Reusable batch.** For callers that poll frequently, `SpiDevice.batch(byte[][] txFrames, int
-settleMicros)` returns an `AutoCloseable` `Batch` whose `transfer()` re-runs the same frames
-without re-allocating the three native buffers `LinuxSpiDevice` needs per `SPI_IOC_MESSAGE`
-(transmit block, receive block, `spi_ioc_transfer[]` array — the last populated only once).
-`Atm90E36` creates its measurement `Batch` on first `readMeasurements()` and reuses it for
-every call thereafter, releasing it in `close()`; so a 5 Hz (or faster) sampling loop
-allocates only the returned `Measurements` record per tick. The one-shot
-`SpiDevice.transfer(byte[][], int)` is now just `try (var b = batch(...)) { return b.transfer(); }`.
-
-This removes ~15 system calls and all of the per-read thread-sleep jitter per CSV row. If a
-particular SPI controller or `cs-gpios` device-tree setup mishandles `cs_change` inside a
-message, call `LinuxSpiDevice.setMultiTransfer(false)` to fall back to one `ioctl` per frame
-(the `SpiDevice` default behaviour); `readMeasurements()` then still returns the same result.
-**This batched path needs on-hardware validation** — the unit tests exercise it only through
-`FakeSpiDevice`.
 
 ## Tests
 
-```sh
-./gradlew test
-```
-
-Host-side only (no hardware): `FakeSpiDevice` emulates the ATM90E36 SPI framing, so the tests
-cover the register byte-swapping, `readRegister` / `writeRegister` framing, the measurement
-scaling factors, the `begin()` configuration / checksum sequence, the batched
-`readMeasurements()` (16 frames, values matching the individual accessors, one `Batch` reused
-across calls and released on `close()`), and the CSV formatting. The `ioctl` transfer paths
-themselves — single and batched — can only be exercised on a real device.
+The tests live in the
+[`net.solarnetwork.node.hw.atm90e36.test`](../net.solarnetwork.node.hw.atm90e36.test) fragment and
+run host-side, with no hardware. `FakeSpiDevice` emulates the chip's SPI framing, read-to-clear
+energy registers and software reset, so the tests cover the MSB-first register framing, the
+measurement scaling (including register values captured from a real meter), the configuration
+and checksum sequence, `configureIfNeeded()`, the batched measurement and energy reads, and
+`MeterTool`'s option parsing, CSV rows and register output. The `ioctl` transfer paths
+themselves can only be exercised on a real device.
 
 ## License
 

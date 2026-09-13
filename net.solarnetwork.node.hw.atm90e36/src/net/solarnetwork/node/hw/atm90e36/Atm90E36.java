@@ -22,6 +22,7 @@
 
 package net.solarnetwork.node.hw.atm90e36;
 
+import static net.solarnetwork.node.hw.atm90e36.Atm90E36Register.*;
 import static net.solarnetwork.util.ObjectUtils.requireNonNullArgument;
 import java.time.Clock;
 import java.time.Duration;
@@ -52,7 +53,10 @@ public class Atm90E36 implements AutoCloseable {
 	// REGISTER DEFINITIONS
 	// ========================================================================
 
-	/** Address bit 15 set marks a register read (clear marks a write). */
+	/**
+	 * The access type bit, the first bit of a frame: set for a register read,
+	 * clear for a write.
+	 */
 	private static final int READ_FLAG = 0x8000;
 
 	/**
@@ -63,142 +67,7 @@ public class Atm90E36 implements AutoCloseable {
 	 */
 	private static final int BATCH_SETTLE_MICROS = 10;
 
-	// STATUS REGISTERS
-	private static final int SoftReset = 0x00;
-	private static final int SysStatus0 = 0x01;
-	private static final int SysStatus1 = 0x02;
-	private static final int FuncEn0 = 0x03;
-	private static final int FuncEn1 = 0x04;
-	private static final int SagTh = 0x08;
-
-	// CONFIGURATION REGISTERS
-	private static final int ConfigStart = 0x30;
-	private static final int PLconstH = 0x31;
-	private static final int PLconstL = 0x32;
-	private static final int MMode0 = 0x33;
-	private static final int MMode1 = 0x34;
-	private static final int PStartTh = 0x35;
-	private static final int QStartTh = 0x36;
-	private static final int SStartTh = 0x37;
-	private static final int PPhaseTh = 0x38;
-	private static final int QPhaseTh = 0x39;
-	private static final int SPhaseTh = 0x3A;
-	private static final int CSZero = 0x3B;
-
-	// CALIBRATION REGISTERS
-	private static final int CalStart = 0x40;
-	private static final int GainA = 0x47;
-	private static final int PhiA = 0x48;
-	private static final int GainB = 0x49;
-	private static final int PhiB = 0x4A;
-	private static final int GainC = 0x4B;
-	private static final int PhiC = 0x4C;
-	private static final int PoffsetA = 0x41;
-	private static final int QoffsetA = 0x42;
-	private static final int PoffsetB = 0x43;
-	private static final int QoffsetB = 0x44;
-	private static final int PoffsetC = 0x45;
-	private static final int QoffsetC = 0x46;
-	private static final int CSOne = 0x4D;
-
-	// HARMONIC REGISTERS
-	private static final int HarmStart = 0x50;
-	private static final int POffsetAF = 0x51;
-	private static final int POffsetBF = 0x52;
-	private static final int POffsetCF = 0x53;
-	private static final int PGainAF = 0x54;
-	private static final int PGainBF = 0x55;
-	private static final int PGainCF = 0x56;
-	private static final int CSTwo = 0x57;
-
-	// MEASUREMENT CALIBRATION REGISTERS
-	private static final int AdjStart = 0x60;
-	private static final int UgainA = 0x61;
-	private static final int IgainA = 0x62;
-	private static final int UoffsetA = 0x63;
-	private static final int IoffsetA = 0x64;
-	private static final int UgainB = 0x65;
-	private static final int IgainB = 0x66;
-	private static final int UoffsetB = 0x67;
-	private static final int IoffsetB = 0x68;
-	private static final int UgainC = 0x69;
-	private static final int IgainC = 0x6A;
-	private static final int UoffsetC = 0x6B;
-	private static final int IoffsetC = 0x6C;
-	private static final int IgainN = 0x6D;
-	private static final int IoffsetN = 0x6E;
-	private static final int CSThree = 0x6F;
-
-	// ENERGY REGISTERS
-	private static final int APenergyT = 0x80;
-	private static final int APenergyA = 0x81;
-	private static final int APenergyB = 0x82;
-	private static final int APenergyC = 0x83;
-	private static final int ANenergyT = 0x84;
-	private static final int ANenergyA = 0x85;
-	private static final int ANenergyB = 0x86;
-	private static final int ANenergyC = 0x87;
-	private static final int RPenergyT = 0x88;
-	private static final int RPenergyA = 0x89;
-	private static final int RPenergyB = 0x8A;
-	private static final int RPenergyC = 0x8B;
-	private static final int RNenergyT = 0x8C;
-	private static final int RNenergyA = 0x8D;
-	private static final int RNenergyB = 0x8E;
-	private static final int RNenergyC = 0x8F;
-	private static final int SAenergyT = 0x90;
-	private static final int SenergyA = 0x91;
-	private static final int SenergyB = 0x92;
-	private static final int SenergyC = 0x93;
-	private static final int SVenergyT = 0x94;
-
-	private static final int EnStatus0 = 0x95;
-	private static final int EnStatus1 = 0x96;
-
-	// POWER & V/I RMS REGISTERS
-	private static final int PmeanT = 0xB0;
-	private static final int PmeanA = 0xB1;
-	private static final int PmeanB = 0xB2;
-	private static final int PmeanC = 0xB3;
-	private static final int QmeanT = 0xB4;
-	private static final int QmeanA = 0xB5;
-	private static final int QmeanB = 0xB6;
-	private static final int QmeanC = 0xB7;
-	private static final int SmeanT = 0xB8;
-	private static final int SmeanA = 0xB9;
-	private static final int SmeanB = 0xBA;
-	private static final int SmeanC = 0xBB;
-	private static final int PFmeanT = 0xBC;
-	private static final int PFmeanA = 0xBD;
-	private static final int PFmeanB = 0xBE;
-	private static final int PFmeanC = 0xBF;
-
-	private static final int PmeanTLSB = 0xC0;
-	private static final int PmeanALSB = 0xC1;
-	private static final int PmeanBLSB = 0xC2;
-	private static final int PmeanCLSB = 0xC3;
-	private static final int QmeanTLSB = 0xC4;
-	private static final int QmeanALSB = 0xC5;
-	private static final int QmeanBLSB = 0xC6;
-	private static final int QmeanCLSB = 0xC7;
-	private static final int SAmeanTLSB = 0xC8;
-	private static final int SmeanALSB = 0xC9;
-	private static final int SmeanBLSB = 0xCA;
-	private static final int SmeanCLSB = 0xCB;
-
-	private static final int UrmsA = 0xD9;
-	private static final int UrmsB = 0xDA;
-	private static final int UrmsC = 0xDB;
-	private static final int IrmsN0 = 0xDC;
-	private static final int IrmsA = 0xDD;
-	private static final int IrmsB = 0xDE;
-	private static final int IrmsC = 0xDF;
-
-	private static final int Freq = 0xF8;
-	private static final int PAngleA = 0xF9;
-	private static final int PAngleB = 0xFA;
-	private static final int PAngleC = 0xFB;
-	private static final int Temp = 0xFC;
+	// the registers themselves are defined in Atm90E36Register
 
 	// ========================================================================
 	// REGISTER BIT MASKS
@@ -273,7 +142,8 @@ public class Atm90E36 implements AutoCloseable {
 	 * @param spi
 	 *        the SPI device to communicate over
 	 * @param config
-	 *        the configuration to apply in {@link #begin()}
+	 *        the configuration to apply in
+	 *        {@link #configure(Atm90E36Config)}
 	 */
 	public Atm90E36(SpiDevice spi, Atm90E36Config config) {
 		this(spi, Clock.systemUTC(), config);
@@ -292,7 +162,8 @@ public class Atm90E36 implements AutoCloseable {
 	 * @param clock
 	 *        the instant source to use
 	 * @param config
-	 *        the configuration to apply in {@link #begin()}
+	 *        the configuration to apply in
+	 *        {@link #configure(Atm90E36Config)}
 	 */
 	public Atm90E36(SpiDevice spi, InstantSource clock, Atm90E36Config config) {
 		super();
@@ -478,8 +349,8 @@ public class Atm90E36 implements AutoCloseable {
 	 * in order: every register {@link #configure(Atm90E36Config)} derives from
 	 * an {@link Atm90E36Config}.
 	 */
-	private static final int[] CONFIGURATION_REGISTERS = { MMode0, MMode1, PLconstH, PLconstL, UgainA,
-			IgainA, UgainB, IgainB, UgainC, IgainC };
+	private static final Atm90E36Register[] CONFIGURATION_REGISTERS = { MMode0, MMode1, PLconstH,
+			PLconstL, UgainA, IgainA, UgainB, IgainB, UgainC, IgainC };
 
 	/**
 	 * Check whether the chip's registers already hold the values {@code config}
@@ -548,11 +419,23 @@ public class Atm90E36 implements AutoCloseable {
 	/**
 	 * Read a 16-bit register value.
 	 *
+	 * @param register
+	 *        the register to read
+	 * @return the register value, {@code 0}-{@code 65535}
+	 * @see #readRegister(int)
+	 */
+	public int readRegister(Atm90E36Register register) {
+		return readRegister(register.getAddress());
+	}
+
+	/**
+	 * Read a 16-bit register value.
+	 *
 	 * <p>
-	 * Byte-for-byte equivalent to a read through the Python
-	 * {@code comm_energy_ic} method: the address (with the read flag set) and
-	 * the result are both byte-swapped, and the same inter-transfer delays are
-	 * applied.
+	 * Per datasheet §4.2.1 each transaction is 32 clocks, MSB first: the access
+	 * type bit (set for a read), a 15-bit address of which the chip decodes
+	 * only the lower 10 bits, then the 16-bit value, which the chip drives on
+	 * {@code SDO} for a read.
 	 * </p>
 	 *
 	 * @param address
@@ -560,26 +443,34 @@ public class Atm90E36 implements AutoCloseable {
 	 * @return the register value, {@code 0}-{@code 65535}
 	 */
 	public int readRegister(int address) {
-		int addr = swap16((address | READ_FLAG) & 0xFFFF);
-		int addrMsb = (addr >> 8) & 0xFF;
-		int addrLsb = addr & 0xFF;
-
 		sleepMicros(10);
-		byte[] response = spi.transfer(new byte[] { (byte) addrMsb, (byte) addrLsb, 0x00, 0x00 });
+		byte[] response = spi.transfer(readFrame(address));
 		sleepMicros(4);
-		int result = ((response[2] & 0xFF) << 8) | (response[3] & 0xFF);
+		int result = decodeReadResponse(response);
 		sleepMicros(10);
+		return result;
+	}
 
-		return swap16(result) & 0xFFFF;
+	/**
+	 * Write a 16-bit register value.
+	 *
+	 * @param register
+	 *        the register to write
+	 * @param value
+	 *        the value to write, {@code 0}-{@code 65535}
+	 * @see #writeRegister(int, int)
+	 */
+	public void writeRegister(Atm90E36Register register, int value) {
+		writeRegister(register.getAddress(), value);
 	}
 
 	/**
 	 * Write a 16-bit register value.
 	 *
 	 * <p>
-	 * Byte-for-byte equivalent to a write through the Python
-	 * {@code comm_energy_ic} method: the address and the value are both
-	 * byte-swapped, and the same inter-transfer delays are applied.
+	 * Per datasheet §4.2.1 each transaction is 32 clocks, MSB first: the access
+	 * type bit (clear for a write), a 15-bit address of which the chip decodes
+	 * only the lower 10 bits, then the 16-bit value.
 	 * </p>
 	 *
 	 * @param address
@@ -588,44 +479,44 @@ public class Atm90E36 implements AutoCloseable {
 	 *        the value to write, {@code 0}-{@code 65535}
 	 */
 	public void writeRegister(int address, int value) {
-		int addr = swap16(address & 0xFFFF);
-		int val = swap16(value & 0xFFFF);
-		int addrMsb = (addr >> 8) & 0xFF;
-		int addrLsb = addr & 0xFF;
-		int valMsb = (val >> 8) & 0xFF;
-		int valLsb = val & 0xFF;
-
+		int command = address & 0x7FFF;
 		sleepMicros(10);
-		spi.transfer(new byte[] { (byte) addrMsb, (byte) addrLsb, (byte) valMsb, (byte) valLsb });
+		spi.transfer(new byte[] { (byte) ((command >> 8) & 0xFF), (byte) (command & 0xFF),
+				(byte) ((value >> 8) & 0xFF), (byte) (value & 0xFF) });
 		sleepMicros(4);
 		sleepMicros(10);
 	}
 
-	/** Swap the upper and lower bytes of a 16-bit value. */
-	private static int swap16(int v) {
-		return ((v >> 8) & 0xFF) | ((v << 8) & 0xFF00);
+	/** Build the 4-byte read frame for a register address, MSB first. */
+	private static byte[] readFrame(int address) {
+		int command = READ_FLAG | (address & 0x7FFF);
+		return new byte[] { (byte) ((command >> 8) & 0xFF), (byte) (command & 0xFF), 0x00, 0x00 };
+	}
+
+	/** Decode the register value from a read frame's response, MSB first. */
+	private static int decodeReadResponse(byte[] response) {
+		return ((response[2] & 0xFF) << 8) | (response[3] & 0xFF);
 	}
 
 	/**
 	 * Read several registers in a single batched SPI operation, without
 	 * retaining the batch.
 	 *
-	 * @param addresses
-	 *        the register addresses to read, in order
-	 * @return the register values, one per address
+	 * @param registers
+	 *        the registers to read, in order
+	 * @return the register values, one per register
 	 */
-	private int[] readRegisters(int... addresses) {
-		try (SpiDevice.Batch batch = spi.batch(readFrames(addresses), BATCH_SETTLE_MICROS)) {
+	private int[] readRegisters(Atm90E36Register... registers) {
+		try (SpiDevice.Batch batch = spi.batch(readFrames(registers), BATCH_SETTLE_MICROS)) {
 			return decodeReadResponses(batch.transfer());
 		}
 	}
 
-	/** Build the 4-byte read frame for each register address. */
-	private static byte[][] readFrames(int[] addresses) {
-		byte[][] frames = new byte[addresses.length][];
-		for ( int i = 0; i < addresses.length; i++ ) {
-			int addr = swap16((addresses[i] | READ_FLAG) & 0xFFFF);
-			frames[i] = new byte[] { (byte) ((addr >> 8) & 0xFF), (byte) (addr & 0xFF), 0x00, 0x00 };
+	/** Build the 4-byte read frame for each register. */
+	private static byte[][] readFrames(Atm90E36Register[] registers) {
+		byte[][] frames = new byte[registers.length][];
+		for ( int i = 0; i < registers.length; i++ ) {
+			frames[i] = readFrame(registers[i].getAddress());
 		}
 		return frames;
 	}
@@ -634,16 +525,14 @@ public class Atm90E36 implements AutoCloseable {
 	private static int[] decodeReadResponses(byte[][] responses) {
 		int[] values = new int[responses.length];
 		for ( int i = 0; i < responses.length; i++ ) {
-			byte[] r = responses[i];
-			int raw = ((r[2] & 0xFF) << 8) | (r[3] & 0xFF);
-			values[i] = swap16(raw) & 0xFFFF;
+			values[i] = decodeReadResponse(responses[i]);
 		}
 		return values;
 	}
 
-	private int writeAndGetChecksum(int address, int value, int checksum) {
-		writeRegister(address, value);
-		if ( address != CSZero && address != CSOne && address != CSTwo && address != CSThree ) {
+	private int writeAndGetChecksum(Atm90E36Register register, int value, int checksum) {
+		writeRegister(register, value);
+		if ( register != CSZero && register != CSOne && register != CSTwo && register != CSThree ) {
 			checksum ^= value;
 		}
 		return checksum & 0xFFFF;
@@ -749,8 +638,9 @@ public class Atm90E36 implements AutoCloseable {
 	/**
 	 * The registers read for one {@link #readMeasurements()} call, in order.
 	 */
-	private static final int[] MEASUREMENT_REGISTERS = { UrmsA, UrmsB, UrmsC, IrmsA, IrmsB, IrmsC,
-			PmeanA, PmeanALSB, PmeanB, PmeanBLSB, PmeanC, PmeanCLSB, PmeanT, PmeanTLSB, PFmeanT, Freq };
+	private static final Atm90E36Register[] MEASUREMENT_REGISTERS = { UrmsA, UrmsB, UrmsC, IrmsA, IrmsB,
+			IrmsC, PmeanA, PmeanALSB, PmeanB, PmeanBLSB, PmeanC, PmeanCLSB, PmeanT, PmeanTLSB, PFmeanT,
+			Freq };
 
 	/**
 	 * Read every register needed for a CSV row in a single batched SPI
@@ -771,8 +661,9 @@ public class Atm90E36 implements AutoCloseable {
 	public Measurements readMeasurements() {
 		int[] r = decodeReadResponses(measurementBatch().transfer());
 		return new Measurements(clock.instant(), r[0] / 100.0, r[1] / 100.0, r[2] / 100.0, r[3] / 1000.0,
-				r[4] / 1000.0, r[5] / 1000.0, power(r[6], r[7]), power(r[8], r[9]), power(r[10], r[11]),
-				power(r[12], r[13]), signed16(r[14]) / 1000.0, r[15] / 100.0);
+				r[4] / 1000.0, r[5] / 1000.0, power(r[6], r[7], PHASE_POWER_WEIGHT),
+				power(r[8], r[9], PHASE_POWER_WEIGHT), power(r[10], r[11], PHASE_POWER_WEIGHT),
+				power(r[12], r[13], TOTAL_POWER_WEIGHT), signed16(r[14]) / 1000.0, r[15] / 100.0);
 	}
 
 	private synchronized SpiDevice.Batch measurementBatch() {
@@ -873,13 +764,34 @@ public class Atm90E36 implements AutoCloseable {
 
 	// ACTIVE POWER
 
-	/** Scale a signed MSB + unsigned LSB power register pair to watts / var. */
-	private static double power(int msbRaw, int lsbRaw) {
-		return (signed16(msbRaw) * 65536.0 + lsbRaw) * 0.00032;
+	/**
+	 * The watts (var, VA) per count of a phase power register, datasheet
+	 * Table-11.
+	 */
+	private static final double PHASE_POWER_WEIGHT = 1.0;
+
+	/**
+	 * The watts (var, VA) per count of a total (all-phase-sum) power register,
+	 * datasheet Table-11.
+	 */
+	private static final double TOTAL_POWER_WEIGHT = 4.0;
+
+	/**
+	 * Scale a signed MSB + LSB power register pair to watts / var / VA.
+	 *
+	 * <p>
+	 * The MSB register is two's complement, with 1 LSB worth {@code weight}.
+	 * Only the upper 8 bits of the LSB register are valid, each worth
+	 * {@code weight / 256}, so together the pair is a 32-bit fixed-point value
+	 * with 16 fractional bits.
+	 * </p>
+	 */
+	private static double power(int msbRaw, int lsbRaw, double weight) {
+		return (signed16(msbRaw) * 65536.0 + lsbRaw) / 65536.0 * weight;
 	}
 
-	private double activePower(int msbReg, int lsbReg) {
-		return power(readRegister(msbReg), readRegister(lsbReg));
+	private double activePower(Atm90E36Register msbReg, Atm90E36Register lsbReg, double weight) {
+		return power(readRegister(msbReg), readRegister(lsbReg), weight);
 	}
 
 	/**
@@ -888,7 +800,7 @@ public class Atm90E36 implements AutoCloseable {
 	 * @return phase A active power, in watts
 	 */
 	public double getActivePowerA() {
-		return activePower(PmeanA, PmeanALSB);
+		return activePower(PmeanA, PmeanALSB, PHASE_POWER_WEIGHT);
 	}
 
 	/**
@@ -897,7 +809,7 @@ public class Atm90E36 implements AutoCloseable {
 	 * @return phase B active power, in watts
 	 */
 	public double getActivePowerB() {
-		return activePower(PmeanB, PmeanBLSB);
+		return activePower(PmeanB, PmeanBLSB, PHASE_POWER_WEIGHT);
 	}
 
 	/**
@@ -906,7 +818,7 @@ public class Atm90E36 implements AutoCloseable {
 	 * @return phase C active power, in watts
 	 */
 	public double getActivePowerC() {
-		return activePower(PmeanC, PmeanCLSB);
+		return activePower(PmeanC, PmeanCLSB, PHASE_POWER_WEIGHT);
 	}
 
 	/**
@@ -915,13 +827,13 @@ public class Atm90E36 implements AutoCloseable {
 	 * @return total active power, in watts
 	 */
 	public double getTotalActivePower() {
-		return activePower(PmeanT, PmeanTLSB);
+		return activePower(PmeanT, PmeanTLSB, TOTAL_POWER_WEIGHT);
 	}
 
 	// REACTIVE POWER
 
-	private double reactivePower(int msbReg, int lsbReg) {
-		return power(readRegister(msbReg), readRegister(lsbReg));
+	private double reactivePower(Atm90E36Register msbReg, Atm90E36Register lsbReg, double weight) {
+		return power(readRegister(msbReg), readRegister(lsbReg), weight);
 	}
 
 	/**
@@ -930,7 +842,7 @@ public class Atm90E36 implements AutoCloseable {
 	 * @return phase A reactive power, in var
 	 */
 	public double getReactivePowerA() {
-		return reactivePower(QmeanA, QmeanALSB);
+		return reactivePower(QmeanA, QmeanALSB, PHASE_POWER_WEIGHT);
 	}
 
 	/**
@@ -939,7 +851,7 @@ public class Atm90E36 implements AutoCloseable {
 	 * @return phase B reactive power, in var
 	 */
 	public double getReactivePowerB() {
-		return reactivePower(QmeanB, QmeanBLSB);
+		return reactivePower(QmeanB, QmeanBLSB, PHASE_POWER_WEIGHT);
 	}
 
 	/**
@@ -948,7 +860,7 @@ public class Atm90E36 implements AutoCloseable {
 	 * @return phase C reactive power, in var
 	 */
 	public double getReactivePowerC() {
-		return reactivePower(QmeanC, QmeanCLSB);
+		return reactivePower(QmeanC, QmeanCLSB, PHASE_POWER_WEIGHT);
 	}
 
 	/**
@@ -957,15 +869,14 @@ public class Atm90E36 implements AutoCloseable {
 	 * @return total reactive power, in var
 	 */
 	public double getTotalReactivePower() {
-		return reactivePower(QmeanT, QmeanTLSB);
+		return reactivePower(QmeanT, QmeanTLSB, TOTAL_POWER_WEIGHT);
 	}
 
 	// APPARENT POWER
 
-	private double apparentPower(int msbReg, int lsbReg) {
-		int val = readRegister(msbReg);
-		int valLsb = readRegister(lsbReg);
-		return (val * 65536.0 + valLsb) * 0.00032;
+	private double apparentPower(Atm90E36Register msbReg, Atm90E36Register lsbReg, double weight) {
+		// the MSB is always 0 for apparent power, so signed decoding is harmless
+		return power(readRegister(msbReg), readRegister(lsbReg), weight);
 	}
 
 	/**
@@ -974,7 +885,7 @@ public class Atm90E36 implements AutoCloseable {
 	 * @return phase A apparent power, in VA
 	 */
 	public double getApparentPowerA() {
-		return apparentPower(SmeanA, SmeanALSB);
+		return apparentPower(SmeanA, SmeanALSB, PHASE_POWER_WEIGHT);
 	}
 
 	/**
@@ -983,7 +894,7 @@ public class Atm90E36 implements AutoCloseable {
 	 * @return phase B apparent power, in VA
 	 */
 	public double getApparentPowerB() {
-		return apparentPower(SmeanB, SmeanBLSB);
+		return apparentPower(SmeanB, SmeanBLSB, PHASE_POWER_WEIGHT);
 	}
 
 	/**
@@ -992,7 +903,7 @@ public class Atm90E36 implements AutoCloseable {
 	 * @return phase C apparent power, in VA
 	 */
 	public double getApparentPowerC() {
-		return apparentPower(SmeanC, SmeanCLSB);
+		return apparentPower(SmeanC, SmeanCLSB, PHASE_POWER_WEIGHT);
 	}
 
 	/**
@@ -1001,7 +912,7 @@ public class Atm90E36 implements AutoCloseable {
 	 * @return total apparent power, in VA
 	 */
 	public double getTotalApparentPower() {
-		return apparentPower(SmeanT, SAmeanTLSB);
+		return apparentPower(SmeanT, SAmeanTLSB, TOTAL_POWER_WEIGHT);
 	}
 
 	// FREQUENCY
@@ -1017,7 +928,7 @@ public class Atm90E36 implements AutoCloseable {
 
 	// POWER FACTOR
 
-	private double powerFactor(int reg) {
+	private double powerFactor(Atm90E36Register reg) {
 		return signed16(readRegister(reg)) / 1000.0;
 	}
 
@@ -1059,7 +970,7 @@ public class Atm90E36 implements AutoCloseable {
 
 	// PHASE ANGLE
 
-	private double phaseAngle(int reg) {
+	private double phaseAngle(Atm90E36Register reg) {
 		return signed16(readRegister(reg)) / 10.0;
 	}
 
@@ -1153,7 +1064,7 @@ public class Atm90E36 implements AutoCloseable {
 	 *
 	 * @param start
 	 *        when the registers were last cleared, by the previous read or by
-	 *        {@link Atm90E36#begin()}
+	 *        {@link Atm90E36#configure(Atm90E36Config)}
 	 * @param end
 	 *        when this read cleared them again
 	 * @param activeImport
@@ -1187,10 +1098,10 @@ public class Atm90E36 implements AutoCloseable {
 	/**
 	 * The registers read for one {@link #readEnergy()} call, in order.
 	 */
-	private static final int[] ENERGY_REGISTERS = { APenergyT, APenergyA, APenergyB, APenergyC,
-			ANenergyT, ANenergyA, ANenergyB, ANenergyC, RPenergyT, RPenergyA, RPenergyB, RPenergyC,
-			RNenergyT, RNenergyA, RNenergyB, RNenergyC, SAenergyT, SenergyA, SenergyB, SenergyC,
-			SVenergyT };
+	private static final Atm90E36Register[] ENERGY_REGISTERS = { APenergyT, APenergyA, APenergyB,
+			APenergyC, ANenergyT, ANenergyA, ANenergyB, ANenergyC, RPenergyT, RPenergyA, RPenergyB,
+			RPenergyC, RNenergyT, RNenergyA, RNenergyB, RNenergyC, SAenergyT, SenergyA, SenergyB,
+			SenergyC, SVenergyT };
 
 	/**
 	 * Read every energy register in a single batched SPI operation.
@@ -1362,9 +1273,9 @@ public class Atm90E36 implements AutoCloseable {
 	 * over the configuration, calibration, harmonic and measurement-adjustment
 	 * register blocks, and reports a mismatch against the written values in
 	 * {@code SysStatus0}. Note that it only compares them once the associated
-	 * start register holds {@code 8765H}: {@link #begin()} writes
-	 * {@code 5678H}, which starts the chip without a checksum check, so this
-	 * always reports no error after a {@code begin()}.
+	 * start register holds {@code 8765H}: {@link #configure(Atm90E36Config)}
+	 * writes {@code 5678H}, which starts the chip without a checksum check, so
+	 * this always reports no error after a {@code configure()}.
 	 * </p>
 	 *
 	 * @return {@code true} if {@code SysStatus0} reports any of the

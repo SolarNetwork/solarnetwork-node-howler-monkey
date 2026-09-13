@@ -35,10 +35,11 @@ import net.solarnetwork.node.hw.linux.spi.SpiDevice;
  * host-side unit tests (no hardware).
  *
  * <p>
- * It understands the 4-byte frame produced by {@code Atm90E36.readRegister} /
- * {@code Atm90E36.writeRegister}: a 16-bit big-endian register address (with
- * bit 15 set for reads) followed by a 16-bit big-endian value. Reads are
- * answered from {@link #registers}; writes are recorded in {@link #writes}.
+ * It understands the 4-byte frame of datasheet §4.2.1, all MSB first: a 16-bit
+ * command of the access type bit (bit 15, set for reads) and a 15-bit register
+ * address, of which only the lower 10 bits are decoded, followed by a 16-bit
+ * value. Reads are answered from {@link #registers}; writes are recorded in
+ * {@link #writes}.
  * </p>
  */
 public class FakeSpiDevice implements SpiDevice {
@@ -118,10 +119,6 @@ public class FakeSpiDevice implements SpiDevice {
 	/** The value that triggers a software reset. */
 	private static final int SOFT_RESET_COMMAND = 0x789A;
 
-	private static int swap16(int v) {
-		return ((v >> 8) & 0xFF) | ((v << 8) & 0xFF00);
-	}
-
 	@Override
 	public void open(int mode, int maxSpeedHz, int bitsPerWord) {
 		this.open = true;
@@ -136,24 +133,20 @@ public class FakeSpiDevice implements SpiDevice {
 		if ( tx.length != 4 ) {
 			throw new IllegalArgumentException("Expected a 4-byte frame, got " + tx.length);
 		}
-		int wireAddr = ((tx[0] & 0xFF) << 8) | (tx[1] & 0xFF);
-		int decoded = swap16(wireAddr);
-		boolean read = (decoded & 0x8000) != 0;
-		int address = decoded & 0x7FFF;
+		int command = ((tx[0] & 0xFF) << 8) | (tx[1] & 0xFF);
+		boolean read = (command & 0x8000) != 0;
+		int address = command & 0x3FF;
 
 		if ( read ) {
 			int v = registers.getOrDefault(address, 0) & 0xFFFF;
 			if ( readToClear.contains(address) ) {
 				registers.put(address, 0);
 			}
-			// Atm90E36 reads response[2],response[3] then swap16s the result,
-			// so place swap16(v) into those bytes.
-			int wire = swap16(v);
-			return new byte[] { 0, 0, (byte) ((wire >> 8) & 0xFF), (byte) (wire & 0xFF) };
+			// the chip drives the value on SDO during the last 16 clocks
+			return new byte[] { 0, 0, (byte) ((v >> 8) & 0xFF), (byte) (v & 0xFF) };
 		}
 
-		int wireVal = ((tx[2] & 0xFF) << 8) | (tx[3] & 0xFF);
-		int value = swap16(wireVal) & 0xFFFF;
+		int value = ((tx[2] & 0xFF) << 8) | (tx[3] & 0xFF);
 		writes.add(new Write(address, value));
 		registers.put(address, value);
 		if ( address == SOFT_RESET && value == SOFT_RESET_COMMAND ) {

@@ -31,33 +31,38 @@ import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
 import java.util.EnumSet;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.regex.Pattern;
 import net.solarnetwork.node.hw.atm90e36.Atm90E36;
 import net.solarnetwork.node.hw.atm90e36.Atm90E36Config;
 import net.solarnetwork.node.hw.atm90e36.Atm90E36Config.CurrentSensor;
 import net.solarnetwork.node.hw.atm90e36.Atm90E36Config.LineFrequency;
 import net.solarnetwork.node.hw.atm90e36.Atm90E36Config.PgaGain;
 import net.solarnetwork.node.hw.atm90e36.Atm90E36Config.Phase;
-import net.solarnetwork.node.hw.atm90e36.Atm90E36Config.SumMethod;
 import net.solarnetwork.node.hw.atm90e36.Atm90E36Config.Wiring;
+import net.solarnetwork.node.hw.atm90e36.Atm90E36Register;
 
 /**
  * Command-line tool for reading and calibrating the ATM90E36 chip, a Java port
- * of {@code meter-tool-2.py} retaining the same CLI input and output.
+ * of {@code scripts/meter-tool.py} retaining the same CLI input and output.
  *
  * <pre>
- *   meter-tool [--mode csv|calibrate]
+ *   meter-tool [--mode csv|calibrate] [--read [REG ...]] [options]
  * </pre>
  *
  * <p>
  * With no arguments (or {@code --mode csv}) it prints a CSV stream of
- * measurements to standard output, one row every 5 seconds, until interrupted.
- * With {@code --mode calibrate} it presents the interactive calibration menu.
+ * measurements to standard output, one row every 5 seconds, until interrupted,
+ * only reading from the chip. With {@code --mode calibrate} it configures the
+ * chip and presents the interactive calibration menu. With {@code --read} it
+ * prints raw register values and exits, also without configuring the chip.
  * </p>
  *
  * @author matt
@@ -116,6 +121,22 @@ public final class MeterTool {
 			return;
 		}
 
+		if ( options.containsKey("read") ) {
+			final List<Integer> registers;
+			try {
+				registers = parseRegisters(options.getOrDefault("read", ""));
+			} catch ( IllegalArgumentException e ) {
+				System.err.println(e.getMessage());
+				printUsage(System.err);
+				System.exit(2);
+				return;
+			}
+			if ( !runReadMode(registers) ) {
+				System.exit(1);
+			}
+			return;
+		}
+
 		String mode = options.getOrDefault("mode", "csv");
 		switch (mode) {
 			case "calibrate":
@@ -123,7 +144,7 @@ public final class MeterTool {
 				break;
 
 			case "csv":
-				runCsvMode(config);
+				runCsvMode();
 				break;
 
 			default:
@@ -139,6 +160,11 @@ public final class MeterTool {
 
 	/**
 	 * Parse {@code --name value} and {@code --name=value} options.
+	 *
+	 * <p>
+	 * The exception is {@code --read}, which takes zero or more registers
+	 * ({@code --read a b} or {@code --read=a,b}), stored comma-separated.
+	 * </p>
 	 *
 	 * @param args
 	 *        the raw command-line arguments
@@ -164,6 +190,17 @@ public final class MeterTool {
 				value = name.substring(eq + 1);
 				name = name.substring(0, eq);
 			}
+			if ( "read".equals(name) ) {
+				List<String> registers = new ArrayList<>();
+				if ( value != null ) {
+					registers.add(value);
+				}
+				while ( value == null && i + 1 < args.length && !args[i + 1].startsWith("-") ) {
+					registers.add(args[++i]);
+				}
+				options.put(name, String.join(",", registers));
+				continue;
+			}
 			if ( !VALUED_OPTIONS.contains(name) ) {
 				throw new IllegalArgumentException("Unknown argument: " + a);
 			}
@@ -179,25 +216,24 @@ public final class MeterTool {
 	}
 
 	/**
-	 * Create the meter configuration this tool runs with.
+	 * Create the meter configuration calibrate mode applies.
 	 *
 	 * <p>
 	 * Every value here depends on how the chip is wired to the service being
 	 * metered, which varies per deployment, so each is overridable from the
-	 * command line. The defaults reproduce the {@code MMode0} word
-	 * {@code meter-tool-2.py} used ({@code 500}), less its bit 5, which the
-	 * datasheet reserves.
+	 * command line. The defaults are a 3-phase 4-wire service at 50Hz (as in
+	 * New Zealand) with current transformers and all three phases counted into
+	 * the totals: an {@code MMode0} of {@code 0087H}, the application note's
+	 * 3P4W 50Hz value and also the chip's power-on value.
 	 * </p>
 	 *
 	 * <p>
 	 * Note in particular {@code --phases}. The chip totals its registers as
 	 * {@code PT = PA*EnPA + PB*EnPB + PC*EnPC}, so only the phases named here
 	 * reach {@code PmeanT} and the total energy registers. A three-wire service
-	 * is measured by two elements, A and C, which is what the application
-	 * note's recommended 3P3W configuration selects; the {@code a} default
-	 * carried over from the Python tool totals one element only, and on a
-	 * two-element service under-reports by between half and all of the load,
-	 * depending on power factor.
+	 * is measured by two elements, A and C, so wants {@code --wiring 3p3w
+	 * --phases ac}, as the application note's recommended 3P3W configuration
+	 * selects.
 	 * </p>
 	 *
 	 * @param args
@@ -210,20 +246,16 @@ public final class MeterTool {
 				"60".equals(args.getOrDefault("line-frequency", "50")) ? LineFrequency.HZ_60
 						: LineFrequency.HZ_50);
 		config.setWiring(
-				"3p4w".equals(args.getOrDefault("wiring", "3p3w")) ? Wiring.THREE_PHASE_FOUR_WIRE
-						: Wiring.THREE_PHASE_THREE_WIRE);
+				"3p3w".equals(args.getOrDefault("wiring", "3p4w")) ? Wiring.THREE_PHASE_THREE_WIRE
+						: Wiring.THREE_PHASE_FOUR_WIRE);
 		config.setCurrentSensor("rogowski".equals(args.getOrDefault("current-sensor", "ct"))
 				? CurrentSensor.ROGOWSKI_COIL
 				: CurrentSensor.CURRENT_TRANSFORMER);
-		config.setSummedPhases(parsePhases(args.getOrDefault("phases", "a")));
+		config.setSummedPhases(parsePhases(args.getOrDefault("phases", "abc")));
 		config.setPhaseCurrentPgaGain(parsePgaGain(args.getOrDefault("pga-gain", "2")));
 		config.setMeterConstant(parseInt(args, "meter-constant", Atm90E36Config.DEFAULT_METER_CONSTANT));
 		config.setVoltageGain(parseInt(args, "voltage-gain", VOLTAGE_GAIN));
 		config.setCurrentGain(parseInt(args, "current-gain", CURRENT_GAIN));
-
-		// carried over from meter-tool-2.py's MMode0 value of 500
-		config.setApparentEnergyVectorSum(true);
-		config.setReactivePowerSum(SumMethod.ABSOLUTE);
 		return config;
 	}
 
@@ -272,19 +304,28 @@ public final class MeterTool {
 
 	private static void printUsage(PrintStream out) {
 		out.print("""
-				usage: meter-tool [--mode {calibrate,csv}] [options]
+				usage: meter-tool [--mode {calibrate,csv}] [--read [REG ...]] [options]
 
 				ATM90E36 Energy Monitor
 
-				  --mode {calibrate,csv}       Working mode (default: csv)
+				  --mode {calibrate,csv}       Working mode (default: csv); csv only reads
+				                               from the chip, calibrate configures it
+				  --read [REG ...]             Print raw register values as
+				                               "0xADDR (Name): 0xVALUE" lines and exit,
+				                               without configuring the chip. Each REG is a
+				                               register name (e.g. PmeanT), hex (0xB0) or
+				                               decimal (176). With no REG, reads the power
+				                               diagnostic registers.
 
-				Metering configuration; these depend on how the chip is wired to the
-				service being metered, so they vary per deployment:
+				Metering configuration, applied by calibrate mode; these depend on how
+				the chip is wired to the service being metered, so they vary per
+				deployment:
 
 				  --line-frequency {50,60}     Grid frequency, Hz (default: 50)
-				  --wiring {3p4w,3p3w}         Connection type (default: 3p3w)
+				  --wiring {3p4w,3p3w}         Connection type (default: 3p4w)
 				  --phases <abc>               Phases counted into the all-phase totals
-				                               a four-wire service uses 'abc'.
+				                               (default: abc); a three-wire service
+				                               uses 'ac'
 				  --current-sensor {ct,rogowski}
 				                               Current sampling (default: ct)
 				  --pga-gain {1,2,4}           Analog gain on the phase current channels
@@ -293,6 +334,135 @@ public final class MeterTool {
 				  --voltage-gain <n>           Voltage RMS gain (default: %d)
 				  --current-gain <n>           Current RMS gain (default: %d)
 				""".formatted(Atm90E36Config.DEFAULT_METER_CONSTANT, VOLTAGE_GAIN, CURRENT_GAIN));
+	}
+
+	// ========================================================================
+	// MODE: REGISTER READ
+	// ========================================================================
+
+	/**
+	 * The registers {@code --read} prints when given none, for diagnosing power
+	 * readings.
+	 *
+	 * <p>
+	 * {@code MMode0} bits {@code EnPA}/{@code EnPB}/{@code EnPC} select the
+	 * phases counted into {@code PmeanT}; a phase whose |P|+|Q| is below
+	 * {@code PPhaseTh} is counted as 0; {@code UrmsA} x {@code IrmsA} x
+	 * {@code PFmeanA} cross-checks {@code PmeanA}; and {@code EnStatus0} b14
+	 * ({@code TPNoload}) flags total power below {@code PStartTh}.
+	 * </p>
+	 */
+	static final List<String> DIAGNOSTIC_REGISTERS = List.of("MMode0", "PStartTh", "PPhaseTh", "UrmsA",
+			"IrmsA", "PmeanT", "PmeanTLSB", "PmeanA", "PmeanALSB", "QmeanA", "PFmeanA", "EnStatus0");
+
+	private static final Pattern REGISTER_SEPARATOR = Pattern.compile("[,\\s]+");
+
+	/**
+	 * Parse a {@code --read} register list.
+	 *
+	 * @param value
+	 *        comma or space separated registers, each as accepted by
+	 *        {@link #parseRegister(String)}; empty for
+	 *        {@link #DIAGNOSTIC_REGISTERS}
+	 * @return the register addresses, in order
+	 * @throws IllegalArgumentException
+	 *         if a register is not recognised
+	 */
+	static List<Integer> parseRegisters(String value) {
+		List<Integer> addresses = new ArrayList<>();
+		for ( String s : REGISTER_SEPARATOR.split(value) ) {
+			if ( !s.isEmpty() ) {
+				addresses.add(parseRegister(s));
+			}
+		}
+		if ( addresses.isEmpty() ) {
+			for ( String name : DIAGNOSTIC_REGISTERS ) {
+				addresses.add(parseRegister(name));
+			}
+		}
+		return addresses;
+	}
+
+	/**
+	 * Parse a register given as a name ({@code PmeanT}, ignoring case), hex
+	 * ({@code 0xB0}) or decimal ({@code 176}).
+	 *
+	 * @param value
+	 *        the register
+	 * @return the register address
+	 * @throws IllegalArgumentException
+	 *         if the register is not recognised
+	 */
+	static int parseRegister(String value) {
+		Atm90E36Register register = Atm90E36Register.forName(value);
+		if ( register != null ) {
+			return register.getAddress();
+		}
+		int result;
+		try {
+			result = (value.startsWith("0x") || value.startsWith("0X")
+					? Integer.parseInt(value.substring(2), 16)
+					: Integer.parseInt(value));
+		} catch ( NumberFormatException e ) {
+			throw new IllegalArgumentException(
+					"Invalid --read register %s (expected a register name or number)".formatted(value));
+		}
+		if ( result < 0 || result > 0x7FFF ) {
+			throw new IllegalArgumentException(
+					"Invalid --read register %s (address out of range)".formatted(value));
+		}
+		return result;
+	}
+
+	/**
+	 * Read registers and format each as a {@code 0xADDR (Name): 0xVALUE} line,
+	 * with the labels padded so the values line up.
+	 *
+	 * @param eic
+	 *        the meter to read
+	 * @param addresses
+	 *        the register addresses to read, in order
+	 * @return the lines, one per address
+	 */
+	static List<String> registerLines(Atm90E36 eic, List<Integer> addresses) {
+		List<String> labels = new ArrayList<>(addresses.size());
+		int width = 1;
+		for ( int address : addresses ) {
+			Atm90E36Register register = Atm90E36Register.forAddress(address);
+			String label = (register != null
+					? String.format(Locale.ROOT, "0x%04X (%s)", address, register.name())
+					: String.format(Locale.ROOT, "0x%04X", address));
+			labels.add(label);
+			width = Math.max(width, label.length());
+		}
+		List<String> lines = new ArrayList<>(addresses.size());
+		for ( int i = 0; i < addresses.size(); i++ ) {
+			lines.add(String.format(Locale.ROOT, "%-" + width + "s: 0x%04X", labels.get(i),
+					eic.readRegister(addresses.get(i))));
+		}
+		return lines;
+	}
+
+	/**
+	 * Print raw register values to standard output, without configuring the
+	 * chip.
+	 *
+	 * @param addresses
+	 *        the register addresses to read, in order
+	 * @return {@code true} if every register was read
+	 */
+	public static boolean runReadMode(List<Integer> addresses) {
+		try (Atm90E36 eic = new Atm90E36(spiDeviceFor(SPI_BUS, SPI_DEVICE))) {
+			eic.open();
+			for ( String line : registerLines(eic, addresses) ) {
+				System.out.println(line);
+			}
+			return true;
+		} catch ( Exception e ) {
+			System.err.println("Error: " + e.getMessage());
+			e.printStackTrace();
+			return false;
+		}
 	}
 
 	// ========================================================================
@@ -320,6 +490,8 @@ public final class MeterTool {
 			eic.open();
 			eic.configure(config);
 			sleep(1000);
+			out.printf("Configured: MMode0=0x%04X (expected 0x%04X)%n",
+					eic.readRegister(Atm90E36Register.MMode0), eic.getMeteringMode());
 
 			while ( true ) {
 				out.println();
@@ -429,8 +601,8 @@ public final class MeterTool {
 					out.println("Current Gain A: " + eic.getCurrentGainA());
 					out.println("Current Gain B: " + eic.getCurrentGainB());
 					out.println("Current Gain C: " + eic.getCurrentGainC());
-					out.printf("Metering Mode: 0x%04X%n", eic.getMeteringMode());
-					out.printf("PGA Gain Mode: 0x%04X%n", eic.getPgaGainMode());
+					out.printf("Metering Mode (MMode0): 0x%04X%n", eic.getMeteringMode());
+					out.println("PGA Gain: " + eic.getPgaGainMode());
 				} else {
 					out.println("❌ Invalid selection!");
 				}
@@ -460,16 +632,20 @@ public final class MeterTool {
 	/**
 	 * Stream measurements to standard output as CSV, one row every 5 seconds.
 	 *
-	 * @param config
-	 *        the configuration to apply to the chip if it needs configuring
+	 * <p>
+	 * This only reads from the chip. The chip keeps its configuration until it
+	 * loses power, so use {@link #runCalibrationMode(Atm90E36Config)} to
+	 * configure it; a warning is printed to standard error if it is not
+	 * configured.
+	 * </p>
 	 */
 	// the shutdown hook deliberately closes the try-with-resources 'eic'
 	@SuppressWarnings("try")
-	public static void runCsvMode(Atm90E36Config config) {
+	public static void runCsvMode() {
 		final PrintStream out = System.out;
 		final AtomicBoolean running = new AtomicBoolean(true);
 
-		try (Atm90E36 eic = new Atm90E36(spiDeviceFor(SPI_BUS, SPI_DEVICE), config)) {
+		try (Atm90E36 eic = new Atm90E36(spiDeviceFor(SPI_BUS, SPI_DEVICE))) {
 
 			// On SIGINT the JVM halts without unwinding the stack, so the
 			// try-with-resources close above would not run; close from a
@@ -482,12 +658,10 @@ public final class MeterTool {
 
 			try {
 				eic.open();
-				if ( eic.configureIfNeeded(config) ) {
-					out.println("Chip was unconfigured; configuration applied.");
-				} else {
-					out.println("Chip already configured; leaving it and its energy registers alone.");
+				if ( !eic.isConfigured() ) {
+					System.err.println("Warning: ATM90E36 not configured since power-on; "
+							+ "run --mode calibrate to configure it");
 				}
-				sleep(2000);
 
 				out.println(CSV_HEADER);
 				out.flush();
@@ -519,7 +693,7 @@ public final class MeterTool {
 
 	/**
 	 * Build one CSV data row, matching the column order and numeric precision
-	 * of {@code meter-tool-2.py}.
+	 * of {@code scripts/meter-tool.py}.
 	 *
 	 * <p>
 	 * All 13 measurement columns come from a single batched SPI read
