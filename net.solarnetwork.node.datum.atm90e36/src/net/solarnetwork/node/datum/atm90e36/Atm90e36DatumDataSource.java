@@ -27,8 +27,7 @@ import static net.solarnetwork.domain.datum.EnergyDatum.WATTS_KEY;
 import static net.solarnetwork.node.hw.linux.spi.SpiDeviceFactory.spiDeviceFor;
 import static net.solarnetwork.settings.support.BasicMultiValueSettingSpecifier.enumSpec;
 import static net.solarnetwork.util.ObjectUtils.nonnull;
-import static net.solarnetwork.util.ObjectUtils.requireNonNullArgument;
-import java.time.Clock;
+import java.time.InstantSource;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.EnumSet;
@@ -77,7 +76,7 @@ import net.solarnetwork.settings.support.BasicToggleSettingSpecifier;
  * </p>
  *
  * @author matt
- * @version 1.0
+ * @version 1.1
  */
 public class Atm90e36DatumDataSource extends DatumDataSourceSupport implements DatumDataSource,
 		SettingSpecifierProvider, SettingsChangeObserver, ServiceLifecycleObserver {
@@ -92,7 +91,6 @@ public class Atm90e36DatumDataSource extends DatumDataSourceSupport implements D
 	public static final int DEFAULT_SPI_CHIP = 0;
 
 	private final Atm90E36Config config = new Atm90E36Config();
-	private final Clock clock;
 	private final AtomicReference<@Nullable NodeDatum> lastDatum = new AtomicReference<>();
 
 	private int spiBus = DEFAULT_SPI_BUS;
@@ -113,7 +111,7 @@ public class Atm90e36DatumDataSource extends DatumDataSourceSupport implements D
 	 * </p>
 	 */
 	public Atm90e36DatumDataSource() {
-		this(Clock.systemUTC());
+		this(InstantSource.system());
 	}
 
 	/**
@@ -122,9 +120,8 @@ public class Atm90e36DatumDataSource extends DatumDataSourceSupport implements D
 	 * @param clock
 	 *        the clock to use
 	 */
-	public Atm90e36DatumDataSource(Clock clock) {
-		super();
-		this.clock = requireNonNullArgument(clock, "clock");
+	public Atm90e36DatumDataSource(InstantSource clock) {
+		super(clock);
 	}
 
 	@Override
@@ -360,7 +357,7 @@ public class Atm90e36DatumDataSource extends DatumDataSourceSupport implements D
 	// read device and return data + active config so it can be interpreted correctly
 	private synchronized DataAndConfig readFromDevice() {
 		if ( device == null ) {
-			device = new Atm90E36(spiDeviceFor(spiBus, spiChip), clock, config);
+			device = new Atm90E36(spiDeviceFor(spiBus, spiChip), getClock(), config);
 			device.open();
 			if ( device.configureIfNeeded(config) ) {
 				wasConfigured();
